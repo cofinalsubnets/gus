@@ -45,17 +45,14 @@ void println(val, FILE*);
 #define GC_ALLOC_CYCLE (1<<15)
 #define GC_MEM_MAX (1<<25)
 #define MARKED 1
-#define PROTECTED (1<<1)
 #define ATOMIC (1<<2)
-#define COLLECTED (1<<3)
-#define CHECKED (1<<4)
 #define IS(f,h) (h&&(h->alive&f))
 #define SET(f,h) if(f)h->alive|=f
 #define UNSET(f,h) if(f)h->alive&=~f
 
 char gc_atomic = 0;
 unsigned long gc_allocs = 0, gc_mem = 0;
-struct _val root = { { { NULL, NULL } }, NULL, t_pair, PROTECTED };
+struct _val root = { { { NULL, NULL } }, NULL, t_pair, 0 };
 val vals = &root;
 
 void gc_mark(val v) {
@@ -82,7 +79,6 @@ void gc() {
       t_t t = type_of(v);
       if (t == t_str || t == t_err || t == t_err_thrown) free(v->data.str);
       gc_mem -= sizeof(struct _val);
-      SET(COLLECTED, v);
       free(v);
       v = prev ? prev->next : vals;
     }
@@ -157,6 +153,7 @@ val error(char *s)           ctor1(t_err_thrown, str, strdup(s))
 #define RET_VAL cadr(workspace)
 #define GLOBAL cddr(workspace)
 #define RETURN(x) { RET_VAL=x; pop_frame(); return; }
+#define CONTINUE(s, a, b) { caar(STACK) = s; car(cdar(STACK)) = NULL; cadr(cdar(STACK)) = a; cddr(cdar(STACK)) = b; return; }
 #define require(v, t) if (type_of(v) != t) return error("Type error: not " #t)
 #define pop_frame() STACK = cdr(STACK)
 void push_frame(val frame_type, val a,  val b) {
@@ -164,13 +161,6 @@ void push_frame(val frame_type, val a,  val b) {
   car(STACK) = cons(a, b);
   car(STACK) = cons(NULL, car(STACK));
   car(STACK) = cons(frame_type, car(STACK));
-}
-
-void _continue(val s, val a, val b) {
-  caar(STACK) = s;
-  car(cdar(STACK)) = NULL;
-  cadr(cdar(STACK)) = a;
-  cddr(cdar(STACK)) = b;
 }
 
 void do_eval() {
@@ -187,8 +177,7 @@ void do_eval() {
       if (t != t_prim && t != t_func && t != t_form) RETURN(error("Type error: not applicable"));
       if (t == t_prim || t == t_func) args = eval_args(args, env, &cdr(acc));
       if (t == t_prim) RETURN(fn->data.prim(args));
-      _continue(sym_apply, fn, args);
-      break;
+      CONTINUE(sym_apply, fn, args);
     case t_sym:
       for (; env; env = cdr(env))
         if ((acc = assq_c(d, car(env)))) RETURN(cdr(acc));
@@ -204,7 +193,7 @@ void do_apply() {
   val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
   gc_atomic_end();
   for (; cdr(body); body = cdr(body)) eval(car(body), env);
-  _continue(sym_eval, car(body), env);
+  CONTINUE(sym_eval, car(body), env);
 }
 
 #define eval_toplevel(v) eval(v, GLOBAL)
@@ -291,10 +280,9 @@ val spec_def(val b, val env) {
 
 val spec_set(val b, val env) {
   require_binary(b);
-  val k = car(b);
+  val kv, k = car(b);
   require(k, t_sym);
-  val kv = assq_c(k, env);
-  if (kv) cdr(kv) = eval(cadr(b), env);
+  if ((kv = assq_c(k, env))) cdr(kv) = eval(cadr(b), env);
   return cdr(kv);
 }
 
@@ -302,16 +290,14 @@ val spec_set_car(val b, val env) {
   require_binary(b);
   val p = eval(car(b), env), x = cadr(b);
   require(p, t_pair);
-  car(b) = eval(x, env);
-  return car(b);
+  return car(b) = eval(x, env);
 }
 
 val spec_set_cdr(val b, val env) {
   require_binary(b);
   val p = eval(car(b), env), x = cadr(b);
   require(p, t_pair);
-  cdr(b) = eval(x, env);
-  return cdr(b);
+  return cdr(b) = eval(x, env);
 }
 
 val spec_lambda(val b, val env) {
@@ -327,8 +313,6 @@ val spec_form(val b, val env) {
 }
 
 val spec_quote(val v, val env) { return car(v); }
-val assq(val), eq(val);
-
 
 #define require_unary(a) require(cdr(a), t_nil)
 #define binop(n, op) val n(val as) { require_binary(as); require(car(as), t_num); require(cadr(as), t_num); return num(car(as)->data.num op cadr(as)->data.num); }
@@ -345,6 +329,7 @@ unop(_car, t_pair, car)
 unop(_cdr, t_pair, cdr)
 #undef unop
 val scurry(val n) { require(n, t_nil); exit(0); }
+val assq(val), eq(val);
 
 #define sym(n,s) sym_##n = symbol(s)
 void initialize() {
