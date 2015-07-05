@@ -67,8 +67,7 @@ void gc_mark(val v) {
 
 void gc() {
   gc_mark(&root);
-  val prev = NULL, v = vals;
-  while (v) {
+  for (val prev = NULL, v = vals; v;) {
     if (v->alive) {
       UNSET(MARKED, v);
       prev = v;
@@ -110,9 +109,8 @@ oom:
 
 void gc_atomic_begin() { gc_atomic = 1; }
 void gc_atomic_end() {
-  val v;
   gc_atomic = 0;
-  for (v = vals; v && IS(ATOMIC, v); v = v->next) UNSET(ATOMIC, v);
+  for (val v = vals; v && IS(ATOMIC, v); v = v->next) UNSET(ATOMIC, v);
 }
 
 val sym_t, sym_eval, sym_apply, sym_if, sym_def, sym_set, sym_set_car,
@@ -226,7 +224,7 @@ val spec_if(val, val), spec_def(val, val), spec_set(val, val),
     spec_lambda(val, val), spec_form(val, val), spec_quote(val, val);
 
 struct {
-  val name;
+  char *name;
   val (*fn)(val, val);
 } forms[] = {
   { NULL, spec_if },
@@ -240,23 +238,16 @@ struct {
 };
 
 val (*special_preinit(val k))(val, val) {
-  forms[0].name = sym_if;
-  forms[1].name = sym_def;
-  forms[2].name = sym_set;
-  forms[3].name = sym_set_car;
-  forms[4].name = sym_set_cdr;
-  forms[5].name = sym_lambda;
-  forms[6].name = sym_form;
-  forms[7].name = sym_quote;
-  special = special_postinit;
-  return special_postinit(k);
+  val syms[] = { sym_if, sym_def, sym_set, sym_set_car, sym_set_cdr, sym_lambda, sym_form, sym_quote };
+  for (int i = 0; i < sizeof(syms) / sizeof(*syms); ++i)
+    forms[i].name = syms[i]->data.str;
+  return (special = special_postinit)(k);
 }
 
 val (*special_postinit(val k))(val, val) {
-  int i;
   if (type_of(k) != t_sym) return NULL;
-  for (i = 0; i < (sizeof(forms) / sizeof(*forms)); ++i)
-    if (forms[i].name->data.str == k->data.str) return forms[i].fn;
+  for (int i = 0; i < (sizeof(forms) / sizeof(*forms)); ++i)
+    if (forms[i].name == k->data.str) return forms[i].fn;
   return NULL;
 }
 
@@ -337,7 +328,6 @@ void initialize() {
   val global = cons(cons(symbol("eq?"), prim(eq)), NULL);
   root.data.pair.fst = workspace = cons(NULL, cons(NULL, cons(global, NULL)));
 
-  int i;
   struct { val *s; char *n; } syms[] = {
     { &sym_eval, "eval" },
     { &sym_apply, "apply" },
@@ -352,7 +342,7 @@ void initialize() {
     { &sym_quote, "quote" }
   };
 
-  for (i = 0; i < sizeof(syms)/sizeof(*syms); i++)
+  for (int i = 0; i < sizeof(syms)/sizeof(*syms); i++)
     *syms[i].s = symbol(syms[i].n);
 
   struct { char *s; val (*p)(val); } prims[] = {
@@ -367,7 +357,7 @@ void initialize() {
     { "scurry", scurry }
   };
 
-  for (i = 0; i < sizeof(prims)/sizeof(*prims); i++) {
+  for (int i = 0; i < sizeof(prims)/sizeof(*prims); i++) {
     cdr(global) = cons(car(global), cdr(global));
     car(global) = cons(symbol(prims[i].s), prim(prims[i].p));
   }
@@ -394,10 +384,8 @@ val eq(val args) {
 }
 
 val assq_c(val key, val alist) {
-  while (type_of(alist) == t_pair) {
+  for (; type_of(alist) == t_pair; alist = cdr(alist))
     if (eq_c(caar(alist), key)) return car(alist);
-    alist = cdr(alist);
-  }
   return NULL;
 }
 
