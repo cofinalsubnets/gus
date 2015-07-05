@@ -312,13 +312,25 @@ binop(_sub, -)
 binop(_mul, *)
 binop(_div, /)
 #undef binop
-#define binop(n, fn) val n(val as) { require_binary(as); return fn(car(as), cadr(as)); }
-binop(_cons, cons)
-#undef binop
 #define unop(n, t, fn) val n(val as) { require_unary(as); require(car(as), t); return fn(car(as)); }
 unop(_car, t_pair, car)
 unop(_cdr, t_pair, cdr)
+#define BINOP(as) require_binary(as); val a = car(as), b = cadr(as)
+val _cons(val as) { BINOP(as); return cons(a, b); }
+val _and(val as) { BINOP(as); return a && b ? a : NULL; }
+val _or(val as) { BINOP(as); return a ? a : b; }
+val _lt(val as) {
+  BINOP(as);
+  require(a, t_num); require(b, t_num);
+  return a->data.num < b->data.num ? sym_t : NULL;
+}
+val _gt(val as) {
+  BINOP(as);
+  require(a, t_num); require(b, t_num);
+  return a->data.num > b->data.num ? sym_t : NULL;
+}
 #undef unop
+#undef BINOP
 val scurry(val n) { require(n, t_nil); exit(0); }
 val assq(val), eq(val);
 
@@ -354,7 +366,11 @@ void initialize() {
     { "car", _car },
     { "cdr", _cdr },
     { "cons", _cons },
-    { "scurry", scurry }
+    { "scurry", scurry },
+    { "<", _lt },
+    { ">", _gt },
+    { "and", _and },
+    { "or", _or }
   };
 
   for (int i = 0; i < sizeof(prims)/sizeof(*prims); i++) {
@@ -431,7 +447,14 @@ val read_sym(char **str) {
 }
 
 val read_str(char **str) {
-  return NULL;
+  char *start = *str;
+  while (**str && **str != '"') {
+    if (**str == '\\') ++(*str);
+    ++(*str);
+  }
+  val s = new(t_str);
+  s->data.str = strndup(start, *str - start); 
+  return s;
 }
 
 val read_cons(char **str) {
