@@ -156,7 +156,7 @@ val error(char *s)           ctor1(t_err_thrown, str, strdup(s))
 #define CONTINUE(s, a, b) { caar(STACK) = s; car(cdar(STACK)) = NULL; cadr(cdar(STACK)) = a; cddr(cdar(STACK)) = b; return; }
 #define require(v, t) if (type_of(v) != t) return error("Type error: not " #t)
 #define pop_frame() STACK = cdr(STACK)
-void push_frame(val frame_type, val a,  val b) {
+inline void push_frame(val frame_type, val a,  val b) {
   STACK = cons(NULL, STACK);
   car(STACK) = cons(a, b);
   car(STACK) = cons(NULL, car(STACK));
@@ -411,13 +411,13 @@ val read_sym(char**);
 val read_str(char**);
 val read_cons(char**);
 
-val read(char **str) {
+val read_val(char **str) {
   while (isspace(**str)) ++(*str);
   char c = **str;
   if (!c) return NULL;
   if (c == '\'' || c == '(' || c == '"') {
     ++(*str);
-    return c == '\'' ? cons(sym_quote, cons(read(str), NULL)) :
+    return c == '\'' ? cons(sym_quote, cons(read_val(str), NULL)) :
            c == '(' ? read_cons(str) :
            read_str(str);
   }
@@ -451,10 +451,17 @@ val read_cons(char **str) {
   char c = **str;
   if (!c || c == ')' || c == '.') {
     ++(*str);
-    return (c == '.') ? read(str) : NULL;
+    return (c == '.') ? read_val(str) : NULL;
   }
-  val v = read(str);
+  val v = read_val(str);
   return cons(v, read_cons(str));
+}
+
+val read(char **str) {
+  gc_atomic_begin();
+  val v = read_val(str);
+  gc_atomic_end();
+  return v;
 }
 
 void println(val d, FILE *f) { print(d, f); putc('\n', f); }
