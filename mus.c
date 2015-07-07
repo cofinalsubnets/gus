@@ -12,8 +12,6 @@ typedef enum {
   t_num,
   t_sym,
   t_str,
-  t_err,
-  t_err_thrown,
   t_nil
 } t_t;
 
@@ -76,7 +74,7 @@ void gc() {
     } else {
       prev ? (prev->next = v->next) : (vals = v->next);
       t_t t = type_of(v);
-      if (t == t_str || t == t_err || t == t_err_thrown) free(v->data.str);
+      if (t == t_str) free(v->data.str);
       gc_mem -= sizeof(struct _val);
       free(v);
       v = (prev ? prev->next : vals);
@@ -106,12 +104,13 @@ void gc_atomic_end() {
   for (val v = vals; v && IS(ATOMIC, v); v = v->next) UNSET(ATOMIC, v);
 }
 
-#define STACK car(workspace)
-#define RET_VAL cadr(workspace)
-#define GLOBAL cddr(workspace)
-#define SYMBOL_TABLE root.data.pair.snd
+#define STACK root.data.pair.fst
+#define RET_VAL car(root.data.pair.snd)
+#define ERR_VAL cadr(root.data.pair.snd)
+#define GLOBAL car(cddr(root.data.pair.snd))
+#define SYMBOL_TABLE cdr(cddr(root.data.pair.snd))
 val t, sym_eval, sym_apply, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt,
-    sym_qq, sym_uq, sym_xq, workspace, _eval(val), _apply(val),
+    sym_qq, sym_uq, sym_xq, _eval(val), _apply(val),
     (*special_preinit(val))(val, val), (*special_postinit(val))(val, val),
     (*(*special)(val))(val, val) = special_preinit, _car(val), _cdr(val),
     eval(val, val), eval_args(val, val, val*), zip(val, val), assq_c(val, val);
@@ -125,7 +124,6 @@ val form(val def, val env)   ctor2(t_form, def, env)
 val string(char *s)          ctor1(t_str, str, strdup(s))
 val num(long l)              ctor1(t_num, num, l)
 val prim(val (*p)(val))      ctor1(t_prim, prim, p)
-val error(char *s)           ctor1(t_err_thrown, str, strdup(s))
 val symbol(char *s) {
   for (val st = SYMBOL_TABLE; st; st = cdr(st))
     if (!strcmp(car(st)->data.str, s)) return car(st);
@@ -138,7 +136,7 @@ val symbol(char *s) {
 
 #define RETURN(x) { RET_VAL=x; pop_frame(); return; }
 #define CONTINUE(s, a, b) { caar(STACK) = s; car(cdar(STACK)) = nil; cadr(cdar(STACK)) = a; cddr(cdar(STACK)) = b; return; }
-#define require(v, t) if (type_of(v) != t) return error("Type error: not " #t)
+#define require(v, t) if (type_of(v) != t) return nil
 #define pop_frame() STACK = cdr(STACK)
 void do_eval(), do_apply();
 void push_frame(val frame_type, val a,  val b) {
@@ -150,11 +148,9 @@ void push_frame(val frame_type, val a,  val b) {
 
 val return_to(val caller) {
   while (STACK != caller) {
-    if (type_of(RET_VAL) == t_err_thrown) pop_frame();
-    else if (caar(STACK) == sym_eval) do_eval();
+    if (caar(STACK) == sym_eval) do_eval();
     else do_apply();
   }
-  if (type_of(RET_VAL) == t_err_thrown) RET_VAL->type = t_err;
   return RET_VAL;
 }
 
@@ -171,7 +167,8 @@ void do_eval() {
       t_t tp = type_of(fn);
       if (tp == t_form) {
         push_frame(sym_apply, fn, args);
-        CONTINUE(sym_eval, return_to(cdr(STACK)), env);
+        d = return_to(cdr(STACK));
+        CONTINUE(sym_eval, d, env);
       }
       if (fn == t || fn == nil || tp == t_prim || tp == t_func) {
         args = eval_args(args, env, &cdr(acc));
@@ -180,11 +177,13 @@ void do_eval() {
         if (tp == t_prim) RETURN(fn->data.prim(args));
         CONTINUE(sym_apply, fn, args);
       }
-      RETURN(error("Type error: not applicable"));
+      RETURN(nil);
+//      RETURN(error("Type error: not applicable"));
     case t_sym:
       for (; env; env = cdr(env))
         if ((acc = assq_c(d, car(env)))) RETURN(cdr(acc));
-      RETURN(error("Reference error: not defined"));
+      RETURN(nil);
+//      RETURN(error("Reference error: not defined"));
     default:
       RETURN(d);
   }
@@ -199,7 +198,7 @@ void do_apply() {
   CONTINUE(sym_eval, car(body), env);
 }
 
-#define eval_toplevel(v) eval(v, GLOBAL)
+#define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
 val eval(val d, val env) {
   push_frame(sym_eval, d, env);
   return return_to(cdr(STACK));
@@ -220,7 +219,7 @@ val eval_args(val l, val env, val *acc) {
 #define require_binary(args) require(args, t_pair); require(cdr(args), t_pair); require(cddr(args), t_nil)
 val spec_if(val b, val env) {
   if (type_of(cdr(b)) != t_pair || type_of(cddr(b)) != t_pair || cdr(cddr(b)))
-    return error("syntax error: if");
+    return nil;//error("syntax error: if");
   return eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
 }
 
@@ -260,10 +259,19 @@ val spec_quote(val v, val env) {
   return car(v);
 }
 
+val do_xq(val, val, val);
 val do_qq(val v, val env) {
   if (type_of(v) != t_pair || car(v) == sym_qq) return v;
   else if (car(v) == sym_uq) return eval(cadr(v), env);
+  else if (type_of(car(v)) == t_pair && caar(v) == sym_xq)
+    return do_xq(eval(car(cdar(v)), env), cdr(v), env);
   else return cons(do_qq(car(v), env), do_qq(cdr(v), env));
+}
+
+val do_xq(val a, val d, val env) {
+  if (type_of(a) == t_pair)
+    return cons(car(a), do_xq(cdr(a), d, env));
+  return do_qq(d, env);
 }
 
 val spec_qquote(val v, val env) {
@@ -292,14 +300,12 @@ val (*special_postinit(val k))(val, val) {
   return nil;
 }
 
-
 #define BINARY(as) require_binary(as); val a = car(as), b = cadr(as)
 #define binop(n, tp, r) val n(val as) { BINARY(as); require(a, tp); require(b, tp); return r; }
 #define binop_n(n, op) binop(n, t_num, num(a->data.num op b->data.num))
 binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *) binop_n(_div, /)
 binop(_lt, t_num, a->data.num < b->data.num ? t : nil)
 binop(_gt, t_num, a->data.num > b->data.num ? t : nil)
-val _cons(val as) { BINARY(as); return cons(a, b); }
 val _and(val as) { BINARY(as); return a && b ? a : nil; }
 val _or(val as) { BINARY(as); return a ? a : b; }
 val scurry(val n) { require(n, t_nil); exit(0); }
@@ -313,8 +319,7 @@ val _apply(val v) { BINARY(v); return eval_toplevel(cons(a, b)); }
 
 void mus_initialize() {
   gc_atomic_begin();
-  val global = cons(cons(symbol("eq?"), prim(eq)), nil);
-  root.data.pair.fst = workspace = cons(nil, cons(nil, cons(global, nil)));
+  root.data.pair.snd = cons(nil, cons(nil, cons(nil, nil)));
 
   struct { val *s; char *n; } syms[] = {
     { &sym_eval, "eval" },
@@ -340,7 +345,6 @@ void mus_initialize() {
     { "-", _sub },
     { "*", _mul },
     { "/", _div },
-    { ":", _cons },
     { "scurry", scurry },
     { "<", _lt },
     { ">", _gt },
@@ -349,13 +353,14 @@ void mus_initialize() {
     { "set-hd", set_hd },
     { "set-tl", set_tl },
     { "=", eqish },
+    { "eq", eq },
     { "eval", _eval },
     { "apply", _apply }
   };
 
   for (int i = 0; i < sizeof(prims)/sizeof(*prims); i++) {
-    cdr(global) = cons(car(global), cdr(global));
-    car(global) = cons(symbol(prims[i].s), prim(prims[i].p));
+    GLOBAL = cons(nil, GLOBAL);
+    car(GLOBAL) = cons(symbol(prims[i].s), prim(prims[i].p));
   }
 
   gc_atomic_end();
@@ -472,8 +477,6 @@ void print(val d, FILE *f) {
     case t_prim:
     case t_func: fputs("<fn>", f); break;
     case t_form: fputs("<rw>", f); break;
-    case t_err:
-    case t_err_thrown:
     case t_sym:  fputs(d->data.str, f); break;
     case t_str:
       putc('"', f);
