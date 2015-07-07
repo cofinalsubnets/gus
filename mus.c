@@ -53,7 +53,7 @@ void println(val, FILE*);
 
 char gc_atomic = 0;
 unsigned long gc_allocs = 0, gc_mem = 0;
-struct _val root = { { { NULL, NULL } }, NULL, t_pair, 0 };
+struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 val vals = &root;
 
 void gc_mark(val v) {
@@ -68,43 +68,35 @@ void gc_mark(val v) {
 
 void gc() {
   gc_mark(&root);
-  for (val prev = NULL, v = vals; v;) {
+  for (val prev = NULL, v = vals; v;)
     if (v->alive) {
       UNSET(MARKED, v);
       prev = v;
       v = v->next;
     } else {
-      if (prev) prev->next = v->next;
-      else vals = v->next;
+      prev ? (prev->next = v->next) : (vals = v->next);
       t_t t = type_of(v);
       if (t == t_str || t == t_err || t == t_err_thrown) free(v->data.str);
       gc_mem -= sizeof(struct _val);
       free(v);
-      v = prev ? prev->next : vals;
+      v = (prev ? prev->next : vals);
     }
-  }
-  gc_allocs = 0;
 }
 
 val new(t_t t) {
   if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) {
     gc();
     if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) goto oom;
-  }
-  if (++gc_allocs >= GC_ALLOC_CYCLE) gc();
+  } else if ((++gc_allocs) % GC_ALLOC_CYCLE == 0) gc();
 
   val v = (val) malloc(sizeof(struct _val));
   if (!v) goto oom;
-
   gc_mem += sizeof(struct _val);
-  v->alive = gc_atomic;
-  v->next = vals;
-  v->type = t;
-  vals = v;
+  v->alive = gc_atomic, v->next = vals, v->type = t;
   memset(&(v->data), 0, sizeof(union _data));
-  return v;
+  return vals = v;
 oom:
-  fprintf(stderr, "oom!\n");
+  fprintf(stderr, "Out of memory after %lu allocations.\n", gc_allocs);
   abort();
 }
 
@@ -119,12 +111,11 @@ void gc_atomic_end() {
 #define GLOBAL cddr(workspace)
 #define SYMBOL_TABLE root.data.pair.snd
 val t, sym_eval, sym_apply, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt,
+     workspace, _eval(val), _apply(val),
     (*special_preinit(val))(val, val), (*special_postinit(val))(val, val),
     (*(*special)(val))(val, val) = special_preinit, _car(val), _cdr(val),
-    eval(val, val), eval_args(val, val, val*), zip(val, val), assq_c(val, val),
-    spec_if(val, val), spec_def(val, val), spec_set(val, val), workspace,
-    spec_lambda(val, val), spec_form(val, val), spec_quote(val, val),
-    _eval(val), _apply(val);
+    eval(val, val), eval_args(val, val, val*), zip(val, val), assq_c(val, val);
+
 
 #define ctor1(t, s, v) { val r = new(t); r->data.s = v; return r; }
 #define ctor2(t, a, b) { val r = new(t); car(r) = a; cdr(r) = b; return r; }
@@ -226,6 +217,45 @@ val eval_args(val l, val env, val *acc) {
   return *acc = cons(hd, tl);
 }
 
+#define require_binary(args) require(args, t_pair); require(cdr(args), t_pair); require(cddr(args), t_nil)
+val spec_if(val b, val env) {
+  if (type_of(cdr(b)) != t_pair || type_of(cddr(b)) != t_pair || cdr(cddr(b)))
+    return error("syntax error: if");
+  return eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
+}
+
+val spec_def(val b, val env) {
+  require_binary(b);
+  val k = car(b), x = cadr(b);
+  require(k, t_sym);
+  cdar(env) = cons(caar(env), cdar(env));
+  caar(env) = cons(k, nil);
+  cdr(caar(env)) = eval(x, env);
+  return cdr(caar(env));
+}
+
+val spec_set(val b, val env) {
+  require_binary(b);
+  val kv, k = car(b);
+  require(k, t_sym);
+  for (; env; env = cdr(env)) if ((kv = assq_c(k, car(env))))
+    return cdr(kv) = eval(cadr(b), env);
+  return nil;
+}
+
+val spec_lambda(val b, val env) {
+  require(b, t_pair);
+  require(cdr(b), t_pair);
+  return lambda(b, env);
+}
+
+val spec_form(val b, val env) {
+  require(b, t_pair);
+  require(cdr(b), t_pair);
+  return form(b, env);
+}
+
+val spec_quote(val v, val env) { require(cdr(v), t_nil); return car(v); }
 struct { val k; val (*fn)(val, val); } forms[] = {
   { NULL, spec_if },
   { NULL, spec_def },
@@ -247,44 +277,6 @@ val (*special_postinit(val k))(val, val) {
   return nil;
 }
 
-#define require_binary(args) require(args, t_pair); require(cdr(args), t_pair); require(cddr(args), t_nil)
-val spec_if(val b, val env) {
-  if (!car(b) || !cadr(b) || !car(cddr(b)) || cdr(cddr(b)))
-    return error("syntax error: if");
-  return eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
-}
-
-val spec_def(val b, val env) {
-  require_binary(b);
-  val k = car(b), x = cadr(b);
-  require(k, t_sym);
-  cdar(env) = cons(caar(env), cdar(env));
-  caar(env) = cons(k, nil);
-  cdr(caar(env)) = eval(x, env);
-  return cdr(caar(env));
-}
-
-val spec_set(val b, val env) {
-  require_binary(b);
-  val kv, k = car(b);
-  require(k, t_sym);
-  if ((kv = assq_c(k, env))) cdr(kv) = eval(cadr(b), env);
-  return cdr(kv);
-}
-
-val spec_lambda(val b, val env) {
-  require(b, t_pair);
-  require(cdr(b), t_pair);
-  return lambda(b, env);
-}
-
-val spec_form(val b, val env) {
-  require(b, t_pair);
-  require(cdr(b), t_pair);
-  return form(b, env);
-}
-
-val spec_quote(val v, val env) { require(cdr(v), t_nil); return car(v); }
 
 #define BINARY(as) require_binary(as); val a = car(as), b = cadr(as)
 #define binop(n, tp, r) val n(val as) { BINARY(as); require(a, tp); require(b, tp); return r; }
@@ -304,7 +296,7 @@ unop(_car, t_pair, car) unop(_cdr, t_pair, cdr)
 val _eval(val v) { require(cdr(v), t_nil); return eval_toplevel(car(v)); }
 val _apply(val v) { BINARY(v); return eval_toplevel(cons(a, b)); }
 
-void initialize() {
+void mus_initialize() {
   gc_atomic_begin();
   val global = cons(cons(symbol("eq?"), prim(eq)), nil);
   root.data.pair.fst = workspace = cons(nil, cons(nil, cons(global, nil)));
@@ -330,8 +322,6 @@ void initialize() {
     { "-", _sub },
     { "*", _mul },
     { "/", _div },
-    { "hd", _car },
-    { "tl", _cdr },
     { ":", _cons },
     { "scurry", scurry },
     { "<", _lt },
@@ -353,19 +343,24 @@ void initialize() {
   gc_atomic_end();
 }
 
-val eq_c(val a, val b) { return a == b ? t : nil; }
-val eq(val args) { require_binary(args); return eq_c(car(args), cadr(args)); }
-val assq(val args) { require_binary(args); return assq_c(car(args), cadr(args)); }
+val eq(val args) {
+  require_binary(args);
+  return car(args) == cadr(args) ? t : nil;
+}
+val assq(val args) {
+  require_binary(args);
+  return assq_c(car(args), cadr(args));
+}
 val assq_c(val key, val alist) {
   for (; type_of(alist) == t_pair; alist = cdr(alist))
-    if (eq_c(caar(alist), key)) return car(alist);
+    if (caar(alist) == key) return car(alist);
   return nil;
 }
 
 #define EQ_ON(c) (a->data.c == b->data.c ? t : nil)
 val eqish(val v) {
   BINARY(v);
-  if (eq_c(a, b)) return t;
+  if (a == b) return t;
   if (type_of(a) != type_of(b)) return nil;
   switch (type_of(a)) {
     case t_str:  return strcmp(a->data.str, b->data.str) ? nil : t;
@@ -380,9 +375,12 @@ val read_val(char **str) {
   while (isspace(**str)) ++(*str);
   char c = **str;
   if (!c) return nil;
-  if (c == '\'' || c == '(' || c == '"') {
+  if (c == '\'' || c == '(' || c == '"'/* || c == '`' || c == ',' || c == '@'*/) {
     ++(*str);
     return c == '\'' ? cons(sym_qt, cons(read_val(str), nil)) :
+    /*       c == '`' ? cons(sym_qq, cons(read_val(str), nil)) :
+           c == ',' ? cons(sym_dq, cons(read_val(str), nil)) :
+           c == '@' ? cons(sym_xq, cons(read_val(str), nil)) :*/
            c == '(' ? read_cons(str) :
            read_str(str);
   }
@@ -468,9 +466,9 @@ void print(val d, FILE *f) {
 }
 
 void repl() {
-  char buf[100], *b = buf;
+  char buf[1024], *b = buf;
   printf(">> ");
-  while ((b = fgets(buf, 100, stdin))) {
+  while ((b = fgets(buf, 1024, stdin))) {
     val v = eval_toplevel(read(&b));
     printf("=> ");
     println(v, stdout);
@@ -480,7 +478,7 @@ void repl() {
 }
 
 int main() {
-  initialize();
+  mus_initialize();
   repl();
   return 0;
 }
