@@ -149,16 +149,22 @@ val symbol(char *s) {
 #define CONTINUE(s, a, b) { caar(STACK) = s; car(cdar(STACK)) = nil; cadr(cdar(STACK)) = a; cddr(cdar(STACK)) = b; return; }
 #define require(v, t) if (type_of(v) != t) return error("Type error: not " #t)
 #define pop_frame() STACK = cdr(STACK)
-inline void push_frame(val frame_type, val a,  val b) {
+void do_eval(), do_apply();
+void push_frame(val frame_type, val a,  val b) {
   STACK = cons(nil, STACK);
   car(STACK) = cons(a, b);
   car(STACK) = cons(nil, car(STACK));
   car(STACK) = cons(frame_type, car(STACK));
 }
 
-inline int applicable(val v) {
-  t_t tp = type_of(v);
-  return v == t || v == nil || tp == t_func || tp == t_form || tp == t_prim;
+val return_to(val caller) {
+  while (STACK != caller) {
+    if (type_of(RET_VAL) == t_err_thrown) pop_frame();
+    else if (caar(STACK) == sym_eval) do_eval();
+    else do_apply();
+  }
+  if (type_of(RET_VAL) == t_err_thrown) RET_VAL->type = t_err;
+  return RET_VAL;
 }
 
 void do_eval() {
@@ -168,16 +174,22 @@ void do_eval() {
   switch (type_of(d)) {
     case t_pair:
       args = cdr(d);
-      if ((spec = special(car(d)))) RETURN(spec(args, env));
-      car(ev) = acc = cons(nil, nil); // why do this?
+      if ((spec = special(car(d)))) RETURN(spec(cdr(d), env));
+      car(ev) = acc = cons(nil, nil);
       fn = car(acc) = eval(car(d), env);
-      if (!applicable(fn)) RETURN(error("Type error: not applicable"));
       t_t tp = type_of(fn);
-      if (tp != t_form) args = eval_args(args, env, &cdr(acc));
-      if (tp == t_prim) RETURN(fn->data.prim(args));
-      if (fn == t) RETURN(_car(args));
-      if (fn == nil) RETURN(_cdr(args));
-      CONTINUE(sym_apply, fn, args);
+      if (tp == t_form) {
+        push_frame(sym_apply, fn, args);
+        CONTINUE(sym_eval, return_to(cdr(STACK)), env);
+      }
+      if (fn == t || fn == nil || tp == t_prim || tp == t_func) {
+        args = eval_args(args, env, &cdr(acc));
+        if (fn == t) RETURN(_car(args));
+        if (fn == nil) RETURN(_cdr(args));
+        if (tp == t_prim) RETURN(fn->data.prim(args));
+        CONTINUE(sym_apply, fn, args);
+      }
+      RETURN(error("Type error: not applicable"));
     case t_sym:
       for (; env; env = cdr(env))
         if ((acc = assq_c(d, car(env)))) RETURN(cdr(acc));
@@ -198,15 +210,8 @@ void do_apply() {
 
 #define eval_toplevel(v) eval(v, GLOBAL)
 val eval(val d, val env) {
-  val caller = STACK;
   push_frame(sym_eval, d, env);
-  while (STACK != caller) {
-    if (type_of(RET_VAL) == t_err_thrown) pop_frame();
-    else if (caar(STACK) == sym_eval) do_eval();
-    else do_apply();
-  }
-  if (type_of(RET_VAL) == t_err_thrown) RET_VAL->type = t_err;
-  return RET_VAL;
+  return return_to(cdr(STACK));
 }
 
 val zip(val a, val b) {
