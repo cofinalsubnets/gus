@@ -111,7 +111,7 @@ void gc_atomic_end() {
 #define GLOBAL cddr(workspace)
 #define SYMBOL_TABLE root.data.pair.snd
 val t, sym_eval, sym_apply, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt,
-     workspace, _eval(val), _apply(val),
+    sym_qq, sym_uq, sym_xq, workspace, _eval(val), _apply(val),
     (*special_preinit(val))(val, val), (*special_postinit(val))(val, val),
     (*(*special)(val))(val, val) = special_preinit, _car(val), _cdr(val),
     eval(val, val), eval_args(val, val, val*), zip(val, val), assq_c(val, val);
@@ -255,18 +255,33 @@ val spec_form(val b, val env) {
   return form(b, env);
 }
 
-val spec_quote(val v, val env) { require(cdr(v), t_nil); return car(v); }
+val spec_quote(val v, val env) {
+  require(cdr(v), t_nil);
+  return car(v);
+}
+
+val do_qq(val v, val env) {
+  if (type_of(v) != t_pair || car(v) == sym_qq) return v;
+  else if (car(v) == sym_uq) return eval(cadr(v), env);
+  else return cons(do_qq(car(v), env), do_qq(cdr(v), env));
+}
+
+val spec_qquote(val v, val env) {
+  require(cdr(v), t_nil);
+  return do_qq(car(v), env);
+}
 struct { val k; val (*fn)(val, val); } forms[] = {
   { NULL, spec_if },
   { NULL, spec_def },
   { NULL, spec_set },
   { NULL, spec_lambda },
   { NULL, spec_form },
-  { NULL, spec_quote }
+  { NULL, spec_quote },
+  { NULL, spec_qquote }
 };
 
 val (*special_preinit(val k))(val, val) {
-  val vs[] = { sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt };
+  val vs[] = { sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq };
   for (int i = 0; i < sizeof(vs) / sizeof(*vs); ++i) forms[i].k = vs[i];
   return (special = special_postinit)(k);
 }
@@ -310,7 +325,10 @@ void mus_initialize() {
     { &sym_set, "set" },
     { &sym_fn, "fn" },
     { &sym_rw, "rw" },
-    { &sym_qt, "qt" }
+    { &sym_qt, "qt" },
+    { &sym_qq, "qq" },
+    { &sym_uq, "uq" },
+    { &sym_xq, "xq" }
   };
 
   for (int i = 0; i < sizeof(syms)/sizeof(*syms); i++)
@@ -375,12 +393,12 @@ val read_val(char **str) {
   while (isspace(**str)) ++(*str);
   char c = **str;
   if (!c) return nil;
-  if (c == '\'' || c == '(' || c == '"'/* || c == '`' || c == ',' || c == '@'*/) {
+  if (c == '\'' || c == '(' || c == '"' || c == '`' || c == ',' || c == '@') {
     ++(*str);
     return c == '\'' ? cons(sym_qt, cons(read_val(str), nil)) :
-    /*       c == '`' ? cons(sym_qq, cons(read_val(str), nil)) :
-           c == ',' ? cons(sym_dq, cons(read_val(str), nil)) :
-           c == '@' ? cons(sym_xq, cons(read_val(str), nil)) :*/
+           c == '`' ? cons(sym_qq, cons(read_val(str), nil)) :
+           c == ',' ? cons(sym_uq, cons(read_val(str), nil)) :
+           c == '@' ? cons(sym_xq, cons(read_val(str), nil)) :
            c == '(' ? read_cons(str) :
            read_str(str);
   }
@@ -433,8 +451,21 @@ val read(char **str) {
   return v;
 }
 
-void println(val d, FILE *f) { print(d, f); putc('\n', f); }
+void println(val d, FILE *f) {
+  print(d, f);
+  putc('\n', f);
+}
+
+char quotechar(val v) {
+  return v == sym_qt ? '\'' :
+         v == sym_qq ? '`' :
+         v == sym_uq ? ',' :
+         v == sym_xq ? '@' :
+         '\0';
+}
+
 void print(val d, FILE *f) {
+  char q;
   switch (type_of(d)) {
     case t_nil:  fprintf(f, "()"); break;
     case t_num:  fprintf(f, "%ld", d->data.num); break;
@@ -451,28 +482,32 @@ void print(val d, FILE *f) {
       putc('"', f);
       break;
     case t_pair:
-      putc('(', f);
-      print(car(d), f);
-      for (d = cdr(d); type_of(d) == t_pair; d = cdr(d)) {
-        putc(' ', f);
+      if ((q = quotechar(car(d))) && type_of(cdr(d)) == t_pair) {
+        putc(q, f);
+        print(cadr(d), f);
+      } else {
+        putc('(', f);
         print(car(d), f);
+        for (d = cdr(d); type_of(d) == t_pair; d = cdr(d)) {
+          putc(' ', f);
+          print(car(d), f);
+        }
+        if (d) {
+          fprintf(f, " . ");
+          print(d, f);
+        }
+        putc(')', f);
       }
-      if (d) {
-        fprintf(f, " . ");
-        print(d, f);
-      }
-      putc(')', f);
   }
 }
 
 void repl() {
   char buf[1024], *b = buf;
-  printf(">> ");
+  printf("> ");
   while ((b = fgets(buf, 1024, stdin))) {
     val v = eval_toplevel(read(&b));
-    printf("=> ");
     println(v, stdout);
-    printf(">> ");
+    printf("> ");
   }
   puts("(scurry)");
 }
