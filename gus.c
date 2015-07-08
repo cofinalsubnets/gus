@@ -28,6 +28,7 @@ typedef struct _val {
 
 void print(val, FILE*);
 void println(val, FILE*);
+val read(char **str);
 void panic(int);
 
 #define nil NULL

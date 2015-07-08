@@ -9,3 +9,7 @@ lib.h: lib.gus
 	sed -e 's/"/\\"/g' -e 's/.*/"&"/' lib.gus >> $@
 	echo ";" >> $@
 
+clean:
+	rm lib.h
+	rm gus
+
