@@ -30,6 +30,7 @@ void print(val, FILE*);
 void println(val, FILE*);
 val read(char **str);
 void panic(int);
+void repl(val);
 
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
@@ -106,10 +107,9 @@ void gc_atomic_end() {
 #define GLOBAL cadr(root.data.pair.snd)
 #define SYMBOL_TABLE cddr(root.data.pair.snd)
 val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
-    sym_xq, _eval(val), _apply(val),
-    (*special_preinit(val))(val, val), (*special_postinit(val))(val, val),
-    (*(*special)(val))(val, val) = special_preinit, _car(val), _cdr(val),
-    eval(val, val), eval_args(val, val, val*), assq_c(val, val);
+    sym_xq, sym_repl, _eval(val), _apply(val), (*special(val))(val, val),
+    _car(val), _cdr(val), eval(val, val), eval_args(val, val, val*),
+    assq_c(val, val);
 
 #define ctor1(t, s, v) { val r = new(t); r->data.s = v; return r; }
 #define ctor2(t, a, b) { val r = new(t); car(r) = a; cdr(r) = b; return r; }
@@ -305,25 +305,26 @@ val spec_qquote(val v, val env) {
   arity(1, v, "error: syntax: qq\n");
   return do_qq(car(v), env);
 }
-struct { val k; val (*fn)(val, val); } forms[] = {
-  { NULL, spec_if },
-  { NULL, spec_def },
-  { NULL, spec_set },
-  { NULL, spec_lambda },
-  { NULL, spec_form },
-  { NULL, spec_quote },
-  { NULL, spec_qquote }
-};
 
-val (*special_preinit(val k))(val, val) {
-  val vs[] = { sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq };
-  for (int i = 0; i < sizeof(vs) / sizeof(*vs); ++i) forms[i].k = vs[i];
-  return (special = special_postinit)(k);
+val spec_repl(val v, val env) {
+  repl(env);
+  return RET_VAL;
 }
 
-val (*special_postinit(val k))(val, val) {
+struct { val *k; val (*fn)(val, val); } forms[] = {
+  { &sym_if, spec_if },
+  { &sym_def, spec_def },
+  { &sym_set, spec_set },
+  { &sym_fn, spec_lambda },
+  { &sym_rw, spec_form },
+  { &sym_qt, spec_quote },
+  { &sym_qq, spec_qquote },
+  { &sym_repl, spec_repl }
+};
+
+val (*special(val k))(val, val) {
   for (int i = 0; i < (sizeof(forms) / sizeof(*forms)); ++i)
-    if (forms[i].k == k) return forms[i].fn;
+    if (*forms[i].k == k) return forms[i].fn;
   return nil;
 }
 
@@ -358,7 +359,8 @@ void gus_initialize() {
     { &sym_qt, "qt" },
     { &sym_qq, "qq" },
     { &sym_uq, "uq" },
-    { &sym_xq, "xq" }
+    { &sym_xq, "xq" },
+    { &sym_repl, "repl" }
   };
 
   for (int i = 0; i < sizeof(syms)/sizeof(*syms); i++)
@@ -375,8 +377,8 @@ void gus_initialize() {
     { ">", _gt },
     { "and", _and },
     { "or", _or },
-    { "hd<-", set_hd },
-    { "tl<-", set_tl },
+    { "set-hd", set_hd },
+    { "set-tl", set_tl },
     { "=", eqish },
     { "eq?", eq },
     { "eval", _eval },
@@ -387,7 +389,7 @@ void gus_initialize() {
     GLOBAL = cons(cons(symbol(prims[i].s), prim(prims[i].p, prims[i].s)), GLOBAL);
 
   gc_atomic_end();
-  char *gl = (char*)GUS_LIB;
+  char *gl = (char*) GUS_LIB;
   while (*gl) eval_toplevel(read(&gl));
 }
 
@@ -460,6 +462,7 @@ val read_str(char **str) {
   }
   val s = new(t_str);
   s->data.str = strndup(start, *str - start); 
+  if (**str) ++(*str);
   return s;
 }
 
@@ -536,18 +539,26 @@ void print(val d, FILE *f) {
 }
 
 jmp_buf *rescue = NULL;
-void repl() {
+void repl(val env) {
+  char buf[1024], *b;
   jmp_buf jb, *old = rescue;
   rescue = &jb;
-  char buf[1024], *b = buf;
-  printf("> ");
+  val sp = STACK;
+  RET_VAL = nil;
+
+  printf(">> ");
   while ((b = fgets(buf, 1024, stdin))) {
-    if (setjmp(jb)) STACK = nil;
-    else println(eval_toplevel(read(&b)), stdout);
-    printf("> ");
+    if (setjmp(jb)) STACK = sp;
+    else {
+      RET_VAL = eval(read(&b), env);
+      printf("=> ");
+      println(RET_VAL, stdout);
+    }
+    printf(">> ");
   }
+
   rescue = old;
-  puts("(zzz)");
+  puts("");
 }
 
 void panic(int status) {
@@ -559,6 +570,6 @@ void panic(int status) {
 
 int main() {
   gus_initialize();
-  repl();
+  repl(cons(GLOBAL, nil));
   return 0;
 }
