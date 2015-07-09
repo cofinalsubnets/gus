@@ -178,8 +178,7 @@ void do_eval() {
   switch (type_of(d)) {
     case t_pair:
       if ((sp = special(car(d)))) return stack_return(sp(cdr(d), env));
-      car(ev) = acc = cons(nil, nil);
-      fn = car(acc) = eval(car(d), env);
+      car(ev) = acc = cons(nil, nil), fn = car(acc) = eval(car(d), env);
       if (type_of(fn) == t_rw)
         return stack_continue(t, stack_call(nil, fn, cdr(d)), env);
       if (type_of(fn) & (t_prim | t_fn | t_nil) || fn == t)
@@ -258,6 +257,7 @@ val spec_form(val b, val env) {
 }
 
 val spec_quote(val v, val env) {
+  require(v, t_pair);
   require(cdr(v), t_nil);
   return car(v);
 }
