@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Os -Wall -Werror -s
+CFLAGS := -std=gnu11 -Os -Wall -Werror -s
 
 gus: gus.c lib.h
 	${CC} -o $@ gus.c ${CFLAGS}

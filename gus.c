@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <setjmp.h>
-#include "lib.h"
 
 typedef enum {
   t_pair = 1,
@@ -53,6 +52,7 @@ void panic(int);
 #define IS(f,h) (h&&(h->alive&f))
 #define SET(f,h) if(f)h->alive|=f
 #define UNSET(f,h) if(f)h->alive&=~f
+#define FOREACH(i, x) for (int i = 0; i < sizeof(x)/sizeof(*x); ++i)
 
 char gc_atomic = 0;
 unsigned long gc_allocs = 0, gc_mem = 0;
@@ -78,8 +78,7 @@ void gc() {
       v = v->next;
     } else {
       prev ? (prev->next = v->next) : (vals = v->next);
-      t_t t = type_of(v);
-      if (t == t_str) free(v->data.str);
+      if (v->type == t_str) free(v->data.str);
       gc_mem -= sizeof(struct _val);
       free(v);
       v = (prev ? prev->next : vals);
@@ -115,7 +114,7 @@ void gc_atomic_end() {
 val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
     sym_xq, sym_repl, _eval(val), _apply(val), (*special(val))(val, val),
     _car(val), _cdr(val), eval(val, val), eval_args(val, val, val*),
-    assq_c(val, val);
+    assq_c(val, val), zip(val, val);
 
 #define ctor1(t, s, v) { val r = new(t); r->data.s = v; return r; }
 #define ctor2(t, a, b) { val r = new(t); car(r) = a; cdr(r) = b; return r; }
@@ -135,14 +134,12 @@ val symbol(char *s) {
   SYMBOL_TABLE = cons(nil, SYMBOL_TABLE);
   val v = new(t_sym);
   v->data.str = strdup(s);
-  car(SYMBOL_TABLE) = v;
-  return v;
+  return car(SYMBOL_TABLE) = v;
 }
 
 #define STACK_LIMIT 10000
 void do_eval(), do_apply();
 unsigned long stack_height = 0;
-val dbind(val, val, val);
 void push_frame(val frame_type, val a,  val b) {
   if (++stack_height > STACK_LIMIT) {
     fputs("error: stack overflow", stderr);
@@ -155,9 +152,9 @@ void push_frame(val frame_type, val a,  val b) {
 }
 
 void stack_return(val x) {
-  RET_VAL=x;
+  RET_VAL = x;
   STACK = cdr(STACK);
-  stack_height--;
+  --stack_height;
 }
 
 void stack_continue(val s, val a, val b) {
@@ -167,41 +164,28 @@ void stack_continue(val s, val a, val b) {
   cddr(cdar(STACK)) = b;
 }
 
-void require(val v, t_t t) {
-  if (type_of(v) == t) return;
-  fprintf(stderr, "error: wrong type: ");
-  println(v, stderr);
-  panic(1);
-}
-
-
-val return_to(val caller) {
+val stack_call(val tag, val a, val b) {
+  val caller = STACK;
+  push_frame(tag, a, b);
   while (STACK != caller) caar(STACK) ? do_eval() : do_apply();
   return RET_VAL;
 }
 
 void do_eval() {
   val ev = cdar(STACK), d = cadr(ev), env = cddr(ev);
-  val args, acc, fn, (*spec)(val, val);
+  val acc, fn, (*spec)(val, val);
   if (!env) return stack_return(d);
   switch (type_of(d)) {
     case t_pair:
-      args = cdr(d);
       if ((spec = special(car(d)))) return stack_return(spec(cdr(d), env));
       car(ev) = acc = cons(nil, nil);
       fn = car(acc) = eval(car(d), env);
-      t_t tp = type_of(fn);
-      if (tp == t_rw) {
-        push_frame(nil, fn, args);
-        d = return_to(cdr(STACK));
-        return stack_continue(t, d, env);
-      }
-      if (fn == t || fn == nil || (tp & (t_prim | t_fn))) {
-        args = eval_args(args, env, &cdr(acc));
-        return stack_continue(nil, fn, args);
-      }
+      if (type_of(fn) == t_rw)
+        return stack_continue(t, stack_call(nil, fn, cdr(d)), env);
+      if (type_of(fn) & (t_prim | t_fn))
+        return stack_continue(nil, fn, eval_args(cdr(d), env, &cdr(acc)));
       fprintf(stderr, "error: not applicable: ");
-      println(d, stderr);
+      println(fn, stderr);
       panic(1);
     case t_sym:
       for (; env; env = cdr(env))
@@ -216,11 +200,9 @@ void do_eval() {
 
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
-  if (fn == t) return stack_return(_car(args));
-  if (fn == nil) return stack_return(_cdr(args));
   if (type_of(fn) == t_prim) return stack_return(fn->data.prim.fn(args));
-  gc_atomic_begin(); /* FIXME: this shouldn't rely on gc_atomic */
-  val body = cdar(fn), env = car(ev) = cons(dbind(caar(fn), args, fn), cdr(fn));
+  gc_atomic_begin();
+  val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
   gc_atomic_end();
   for (; cdr(body); body = cdr(body)) eval(car(body), env);
   stack_continue(t, car(body), env);
@@ -229,28 +211,7 @@ void do_apply() {
 #define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
 val eval(val d, val env) {
   push_frame(t, d, env);
-  return return_to(cdr(STACK));
-}
-
-val append(val a, val b) {
-  return !a ? b : !b ? a : cons(car(a), append(cdr(a), b));
-}
-
-val dbind(val a, val b, val f) {
-  t_t ta = type_of(a), tb = type_of(b);
-  if (!a && !b) return nil;
-  if (ta == t_pair && tb == ta)
-    return append(dbind(car(a), car(b), f), dbind(cdr(a), cdr(b), f));
-  if (ta == t_pair || !a) {
-    fprintf(stderr, "error: ");
-    print(a, stderr);
-    fprintf(stderr, " </- ");
-    print(b, stderr);
-    fprintf(stderr, ": ");
-    println(f, stderr);
-    panic(1);
-  }
-  return cons(cons(a, b), nil);
+  return stack_call(t, d, env);
 }
 
 val eval_args(val l, val env, val *acc) {
@@ -260,11 +221,23 @@ val eval_args(val l, val env, val *acc) {
   return *acc = cons(hd, tl);
 }
 
+val zip(val a, val b) {
+  if (type_of(a) != t_pair || type_of(b) != t_pair) return nil;
+  return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
+}
+
 int len(val v) { return type_of(v) == t_pair ? 1 + len(cdr(v)) : 0; }
 #define arity(l, xs, s) if (len(xs) != l) { fputs(s, stderr); panic(1); }
 val spec_if(val b, val env) {
   arity(3, b, "error: syntax: if\n");
   return eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
+}
+
+void require(val v, t_t t) {
+  if (type_of(v) == t) return;
+  fprintf(stderr, "error: wrong type: ");
+  println(v, stderr);
+  panic(1);
 }
 
 val spec_set(val b, val env) {
@@ -331,7 +304,7 @@ val spec_qquote(val v, val env) {
 void repl(val);
 val spec_repl(val v, val env) { repl(env); return RET_VAL; }
 
-struct { val *k; val (*fn)(val, val); } forms[] = {
+const struct { val *k; val (*fn)(val, val); } sforms[] = {
   { &sym_if, spec_if },
   { &sym_def, spec_def },
   { &sym_set, spec_set },
@@ -343,8 +316,7 @@ struct { val *k; val (*fn)(val, val); } forms[] = {
 };
 
 val (*special(val k))(val, val) {
-  for (int i = 0; i < (sizeof(forms) / sizeof(*forms)); ++i)
-    if (*forms[i].k == k) return forms[i].fn;
+  FOREACH(i, sforms) if (*sforms[i].k == k) return sforms[i].fn;
   return nil;
 }
 
@@ -363,59 +335,31 @@ val assq(val), eq(val), eqish(val);
 #define unop(n, t, fn) val n(val as) { require(cdr(as), t_nil); require(car(as), t); return fn(car(as)); }
 unop(_car, t_pair, car) unop(_cdr, t_pair, cdr)
 val _eval(val v) { require(cdr(v), t_nil); return eval_toplevel(car(v)); }
-val _apply(val v) {
-  BINARY(v);
-  push_frame(nil, a, b);
-  return return_to(cdr(STACK));
-}
+val _apply(val v) { BINARY(v); return stack_call(nil, a, b); }
 
-val read(char **str);
-void gus_initialize() {
+const struct { val *s; char *n; } isyms[] = {
+  { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
+  { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
+  { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
+  { &sym_xq, "xq" },   { &sym_repl, "repl" }
+};
+
+const struct { char *s; val (*p)(val); } iprims[] = {
+  { "assq", assq },    { "+", _add },        { "-", _sub },
+  { "*", _mul },       { "/", _div },        { "zzz", scurry },
+  { "<", _lt },        { ">", _gt },         { "and", _and },
+  { "or", _or },       { "set-hd", set_hd }, { "set-tl", set_tl },
+  { "=", eqish },      { "eq?", eq },        { "eval", _eval },
+  { "apply", _apply }, { "hd", _car },       { "tl", _cdr }
+};
+
+void initialize() {
   gc_atomic_begin();
   root.data.pair.snd = cons(nil, cons(nil, nil));
-
-  static struct { val *s; char *n; } syms[] = {
-    { &t, "t" },
-    { &sym_if, "if" },
-    { &sym_def, "def" },
-    { &sym_set, "set" },
-    { &sym_fn, "fn" },
-    { &sym_rw, "rw" },
-    { &sym_qt, "qt" },
-    { &sym_qq, "qq" },
-    { &sym_uq, "uq" },
-    { &sym_xq, "xq" },
-    { &sym_repl, "repl" }
-  };
-
-  for (int i = 0; i < sizeof(syms)/sizeof(*syms); i++)
-    *syms[i].s = symbol(syms[i].n);
-
-  static struct { char *s; val (*p)(val); } prims[] = {
-    { "assq", assq },
-    { "+", _add },
-    { "-", _sub },
-    { "*", _mul },
-    { "/", _div },
-    { "zzz", scurry },
-    { "<", _lt },
-    { ">", _gt },
-    { "and", _and },
-    { "or", _or },
-    { "set-hd", set_hd },
-    { "set-tl", set_tl },
-    { "=", eqish },
-    { "eq?", eq },
-    { "eval", _eval },
-    { "apply", _apply }
-  };
-
-  for (int i = 0; i < sizeof(prims)/sizeof(*prims); i++)
-    GLOBAL = cons(cons(symbol(prims[i].s), prim(prims[i].p, prims[i].s)), GLOBAL);
-
+  FOREACH(i, isyms) *isyms[i].s = symbol(isyms[i].n);
+  FOREACH(i, iprims)
+    GLOBAL = cons(cons(symbol(iprims[i].s), prim(iprims[i].p, iprims[i].s)), GLOBAL);
   gc_atomic_end();
-  char *gl = (char*) GUS_LIB;
-  while (*gl) eval_toplevel(read(&gl));
 }
 
 val eq(val args) {
@@ -426,39 +370,34 @@ val assq(val args) {
   arity(2, args, "error: wrong number of arguments: assq\n");
   return assq_c(car(args), cadr(args));
 }
-val assq_c(val key, val alist) {
-  for (; type_of(alist) == t_pair; alist = cdr(alist))
-    if (caar(alist) == key) return car(alist);
+val assq_c(val k, val kvs) {
+  for (; type_of(kvs) == t_pair; kvs = cdr(kvs))
+    if (caar(kvs) == k) return car(kvs);
   return nil;
 }
 
-#define EQ_ON(c) (a->data.c == b->data.c ? t : nil)
 val eqish(val v) {
   BINARY(v);
   if (a == b) return t;
   if (type_of(a) != type_of(b)) return nil;
   switch (type_of(a)) {
     case t_str:  return strcmp(a->data.str, b->data.str) ? nil : t;
-    case t_num:  return EQ_ON(num);
-    case t_prim: return EQ_ON(prim.fn);
+    case t_num:  return a->data.num == b->data.num ? t : nil;
     default:     return nil;
   }
 }
 
-struct { char c; val *s; } qchars[] = {
-  { '\'', &sym_qt },
-  { '`', &sym_qq },
-  { ',', &sym_uq },
-  { '@', &sym_xq }
+const struct { const char c; val *s; } qchars[] = {
+  { '\'', &sym_qt }, { '`', &sym_qq }, { ',', &sym_uq },  { '@', &sym_xq }
 };
 
 char quotechar(val v) {
-  for (int i = 0; i < 4; ++i) if (*qchars[i].s == v) return qchars[i].c;
+  FOREACH(i, qchars) if (*qchars[i].s == v) return qchars[i].c;
   return 0;
 }
 
 val charquote(char c) {
-  for (int i = 0; i < 4; ++i) if (qchars[i].c == c) return *qchars[i].s;
+  FOREACH(i, qchars) if (qchars[i].c == c) return *qchars[i].s;
   return nil;
 }
 
@@ -588,11 +527,11 @@ void repl(val env) {
 void panic(int status) {
   if (!rescue) exit(status);
   if (gc_atomic) gc_atomic_end();
-  longjmp(*rescue, 1);
+  longjmp(*rescue, status);
 }
 
 int main() {
-  gus_initialize();
+  initialize();
   repl(cons(GLOBAL, nil));
   return 0;
 }
