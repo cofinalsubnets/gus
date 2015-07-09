@@ -112,7 +112,7 @@ void gc_atomic_end() {
 #define SYMBOL_TABLE cddr(root.data.pair.snd)
 val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
     sym_xq, sym_repl, _eval(val), _apply(val), (*special(val))(val, val),
-    _car(val), _cdr(val), eval(val, val), eval_args(val, val, val*),
+    _car(val), _cdr(val), eval_args(val, val, val*),
     assq_c(val, val), zip(val, val);
 
 #define ctor1(t, s, v) { val r = new(t); r->data.s = v; return r; }
@@ -170,6 +170,9 @@ val stack_call(val tag, val a, val b) {
   return RET_VAL;
 }
 
+#define eval(d, env) stack_call(t, d, env)
+#define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
+
 void do_eval() {
   val ev = cdar(STACK), d = cadr(ev), env = cddr(ev), acc, fn, (*sp)(val, val);
   switch (type_of(d)) {
@@ -179,7 +182,7 @@ void do_eval() {
       fn = car(acc) = eval(car(d), env);
       if (type_of(fn) == t_rw)
         return stack_continue(t, stack_call(nil, fn, cdr(d)), env);
-      if (type_of(fn) & (t_prim | t_fn))
+      if (type_of(fn) & (t_prim | t_fn | t_nil) || fn == t)
         return stack_continue(nil, fn, eval_args(cdr(d), env, &cdr(acc)));
       fprintf(stderr, "error: not applicable: ");
       println(fn, stderr);
@@ -197,6 +200,8 @@ void do_eval() {
 
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
+  if (fn == t) return stack_return(_car(args));
+  if (fn == nil) return stack_return(_cdr(args));
   if (type_of(fn) == t_prim) return stack_return(fn->data.prim.fn(args));
   gc_atomic_begin();
   val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
@@ -204,9 +209,6 @@ void do_apply() {
   for (; cdr(body); body = cdr(body)) eval(car(body), env);
   stack_continue(t, car(body), env);
 }
-
-#define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
-val eval(val d, val env) { return stack_call(t, d, env); }
 
 val eval_args(val l, val env, val *acc) {
   if (type_of(l) != t_pair) return l;
@@ -310,7 +312,8 @@ const struct { val *k; val (*fn)(val, val); } sforms[] = {
 };
 
 val (*special(val k))(val, val) {
-  FOREACH(i, sforms) if (*sforms[i].k == k) return sforms[i].fn;
+  FOREACH(i, sforms) if (*sforms[i].k == k)
+    return sforms[i].fn;
   return nil;
 }
 
