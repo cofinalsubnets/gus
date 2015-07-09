@@ -62,8 +62,7 @@ val vals = &root;
 void gc_mark(val v) {
   if (!v || IS(MARKED, v)) return;
   SET(MARKED, v);
-  t_t t = type_of(v);
-  if (t == t_pair || t == t_fn || t == t_rw) {
+  if (type_of(v) & (t_pair | t_fn | t_rw)) {
     gc_mark(car(v));
     gc_mark(cdr(v));
   }
@@ -172,12 +171,10 @@ val stack_call(val tag, val a, val b) {
 }
 
 void do_eval() {
-  val ev = cdar(STACK), d = cadr(ev), env = cddr(ev);
-  val acc, fn, (*spec)(val, val);
-  if (!env) return stack_return(d);
+  val ev = cdar(STACK), d = cadr(ev), env = cddr(ev), acc, fn, (*sp)(val, val);
   switch (type_of(d)) {
     case t_pair:
-      if ((spec = special(car(d)))) return stack_return(spec(cdr(d), env));
+      if ((sp = special(car(d)))) return stack_return(sp(cdr(d), env));
       car(ev) = acc = cons(nil, nil);
       fn = car(acc) = eval(car(d), env);
       if (type_of(fn) == t_rw)
@@ -209,10 +206,7 @@ void do_apply() {
 }
 
 #define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
-val eval(val d, val env) {
-  push_frame(t, d, env);
-  return stack_call(t, d, env);
-}
+val eval(val d, val env) { return stack_call(t, d, env); }
 
 val eval_args(val l, val env, val *acc) {
   if (type_of(l) != t_pair) return l;
