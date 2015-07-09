@@ -174,9 +174,6 @@ void do_eval() {
       }
       if (fn == t || fn == nil || tp == t_prim || tp == t_fn) {
         args = eval_args(args, env, &cdr(acc));
-        if (fn == t) RETURN(_car(args));
-        if (fn == nil) RETURN(_cdr(args));
-        if (tp == t_prim) RETURN(fn->data.prim.fn(args));
         CONTINUE(nil, fn, args);
       }
       fprintf(stderr, "error: not applicable: ");
@@ -195,6 +192,9 @@ void do_eval() {
 
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
+  if (fn == t) RETURN(_car(args));
+  if (fn == nil) RETURN(_cdr(args));
+  if (type_of(fn) == t_prim) RETURN(fn->data.prim.fn(args));
   gc_atomic_begin(); /* FIXME: this shouldn't rely on gc_atomic */
   val body = cdar(fn), env = car(ev) = cons(dbind(caar(fn), args, fn), cdr(fn));
   gc_atomic_end();
@@ -343,13 +343,17 @@ val assq(val), eq(val), eqish(val);
 #define unop(n, t, fn) val n(val as) { require(cdr(as), t_nil); require(car(as), t); return fn(car(as)); }
 unop(_car, t_pair, car) unop(_cdr, t_pair, cdr)
 val _eval(val v) { require(cdr(v), t_nil); return eval_toplevel(car(v)); }
-val _apply(val v) { BINARY(v); return eval_toplevel(cons(a, b)); }
+val _apply(val v) {
+  BINARY(v);
+  push_frame(nil, a, b);
+  return return_to(cdr(STACK));
+}
 
 void gus_initialize() {
   gc_atomic_begin();
   root.data.pair.snd = cons(nil, cons(nil, nil));
 
-  struct { val *s; char *n; } syms[] = {
+  static struct { val *s; char *n; } syms[] = {
     { &t, "t" },
     { &sym_if, "if" },
     { &sym_def, "def" },
@@ -366,7 +370,7 @@ void gus_initialize() {
   for (int i = 0; i < sizeof(syms)/sizeof(*syms); i++)
     *syms[i].s = symbol(syms[i].n);
 
-  struct { char *s; val (*p)(val); } prims[] = {
+  static struct { char *s; val (*p)(val); } prims[] = {
     { "assq", assq },
     { "+", _add },
     { "-", _sub },
@@ -558,7 +562,7 @@ void repl(val env) {
   }
 
   rescue = old;
-  puts("");
+  putchar('\n');
 }
 
 void panic(int status) {
