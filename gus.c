@@ -206,7 +206,7 @@ void do_apply() {
   gc_atomic_begin();
   val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
   gc_atomic_end();
-  for (; cdr(body); body = cdr(body)) eval(car(body), env);
+  for (; type_of(cdr(body)) == t_pair; body = cdr(body)) eval(car(body), env);
   stack_continue(t, car(body), env);
 }
 
@@ -312,8 +312,7 @@ const struct { val *k; val (*fn)(val, val); } sforms[] = {
 };
 
 val (*special(val k))(val, val) {
-  FOREACH(i, sforms) if (*sforms[i].k == k)
-    return sforms[i].fn;
+  FOREACH(i, sforms) if (*sforms[i].k == k) return sforms[i].fn;
   return nil;
 }
 
@@ -337,8 +336,8 @@ val _apply(val v) { BINARY(v); return stack_call(nil, a, b); }
 const struct { val *s; char *n; } isyms[] = {
   { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
   { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
-  { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
-  { &sym_xq, "xq" },   { &sym_repl, "repl" }
+  { &sym_qt, "_qt" },  { &sym_qq, "_qq" },     { &sym_uq, "_uq" },
+  { &sym_xq, "_xq" },  { &sym_repl, "repl" }
 };
 
 const struct { char *s; val (*p)(val); } iprims[] = {
@@ -354,8 +353,8 @@ void initialize() {
   gc_atomic_begin();
   root.data.pair.snd = cons(nil, cons(nil, nil));
   FOREACH(i, isyms) *isyms[i].s = symbol(isyms[i].n);
-  FOREACH(i, iprims)
-    GLOBAL = cons(cons(symbol(iprims[i].s), prim(iprims[i].p, iprims[i].s)), GLOBAL);
+  FOREACH(i, iprims) GLOBAL =
+    cons(cons(symbol(iprims[i].s), prim(iprims[i].p, iprims[i].s)), GLOBAL);
   gc_atomic_end();
 }
 
@@ -463,15 +462,13 @@ void print(val d, FILE *f) {
   switch (type_of(d)) {
     case t_nil:  fprintf(f, "()"); break;
     case t_num:  fprintf(f, "%ld", d->data.num); break;
-    case t_prim:
-      fprintf(f, "#<prim %s>", d->data.prim.name);
-      break;
+    case t_prim: fprintf(f, "#<prim %s>", d->data.prim.name); break;
+    case t_sym:  fputs(d->data.str, f); break;
     case t_fn:
     case t_rw:
       fprintf(f, "#");
       print(cons(d->type == t_fn ? sym_fn : sym_rw, car(d)), f);
       break;
-    case t_sym:  fputs(d->data.str, f); break;
     case t_str:
       putc('"', f);
       for (char *c = d->data.str; *c; c++)
