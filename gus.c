@@ -1,4 +1,3 @@
-#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -6,7 +5,16 @@
 #include <setjmp.h>
 #include "lib.h"
 
-typedef enum { t_pair, t_fn, t_rw, t_prim, t_num, t_sym, t_str, t_nil } t_t;
+typedef enum {
+  t_pair = 1,
+  t_fn = 1<<1,
+  t_rw = 1<<2,
+  t_prim = 1<<3,
+  t_num = 1<<4,
+  t_sym = 1<<5,
+  t_str = 1<<6,
+  t_nil = 1<<7
+} t_t;
 
 typedef struct _val {
   union _data {
@@ -28,9 +36,7 @@ typedef struct _val {
 
 void print(val, FILE*);
 void println(val, FILE*);
-val read(char **str);
 void panic(int);
-void repl(val);
 
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
@@ -134,15 +140,12 @@ val symbol(char *s) {
 }
 
 #define STACK_LIMIT 10000
-#define RETURN(x) { RET_VAL=x; STACK = cdr(STACK); stack_height--; return; }
-#define CONTINUE(s, a, b) { caar(STACK) = s; car(cdar(STACK)) = nil; cadr(cdar(STACK)) = a; cddr(cdar(STACK)) = b; return; }
-#define require(v, t) if (type_of(v) != t) return nil
 void do_eval(), do_apply();
 unsigned long stack_height = 0;
 val dbind(val, val, val);
 void push_frame(val frame_type, val a,  val b) {
   if (++stack_height > STACK_LIMIT) {
-    fputs("stack overflow", stderr);
+    fputs("error: stack overflow", stderr);
     panic(1);
   }
   STACK = cons(nil, STACK);
@@ -150,6 +153,27 @@ void push_frame(val frame_type, val a,  val b) {
   car(STACK) = cons(nil, car(STACK));
   car(STACK) = cons(frame_type, car(STACK));
 }
+
+void stack_return(val x) {
+  RET_VAL=x;
+  STACK = cdr(STACK);
+  stack_height--;
+}
+
+void stack_continue(val s, val a, val b) {
+  caar(STACK) = s;
+  car(cdar(STACK)) = nil;
+  cadr(cdar(STACK)) = a;
+  cddr(cdar(STACK)) = b;
+}
+
+void require(val v, t_t t) {
+  if (type_of(v) == t) return;
+  fprintf(stderr, "error: wrong type: ");
+  println(v, stderr);
+  panic(1);
+}
+
 
 val return_to(val caller) {
   while (STACK != caller) caar(STACK) ? do_eval() : do_apply();
@@ -159,47 +183,47 @@ val return_to(val caller) {
 void do_eval() {
   val ev = cdar(STACK), d = cadr(ev), env = cddr(ev);
   val args, acc, fn, (*spec)(val, val);
-  if (!env) RETURN(d);
+  if (!env) return stack_return(d);
   switch (type_of(d)) {
     case t_pair:
       args = cdr(d);
-      if ((spec = special(car(d)))) RETURN(spec(cdr(d), env));
+      if ((spec = special(car(d)))) return stack_return(spec(cdr(d), env));
       car(ev) = acc = cons(nil, nil);
       fn = car(acc) = eval(car(d), env);
       t_t tp = type_of(fn);
       if (tp == t_rw) {
         push_frame(nil, fn, args);
         d = return_to(cdr(STACK));
-        CONTINUE(t, d, env);
+        return stack_continue(t, d, env);
       }
-      if (fn == t || fn == nil || tp == t_prim || tp == t_fn) {
+      if (fn == t || fn == nil || (tp & (t_prim | t_fn))) {
         args = eval_args(args, env, &cdr(acc));
-        CONTINUE(nil, fn, args);
+        return stack_continue(nil, fn, args);
       }
       fprintf(stderr, "error: not applicable: ");
       println(d, stderr);
       panic(1);
     case t_sym:
       for (; env; env = cdr(env))
-        if ((acc = assq_c(d, car(env)))) RETURN(cdr(acc));
+        if ((acc = assq_c(d, car(env)))) return stack_return(cdr(acc));
       fprintf(stderr, "error: not defined: ");
       println(d, stderr);
       panic(1);
     default:
-      RETURN(d);
+      stack_return(d);
   }
 }
 
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
-  if (fn == t) RETURN(_car(args));
-  if (fn == nil) RETURN(_cdr(args));
-  if (type_of(fn) == t_prim) RETURN(fn->data.prim.fn(args));
+  if (fn == t) return stack_return(_car(args));
+  if (fn == nil) return stack_return(_cdr(args));
+  if (type_of(fn) == t_prim) return stack_return(fn->data.prim.fn(args));
   gc_atomic_begin(); /* FIXME: this shouldn't rely on gc_atomic */
   val body = cdar(fn), env = car(ev) = cons(dbind(caar(fn), args, fn), cdr(fn));
   gc_atomic_end();
   for (; cdr(body); body = cdr(body)) eval(car(body), env);
-  CONTINUE(t, car(body), env);
+  stack_continue(t, car(body), env);
 }
 
 #define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
@@ -230,7 +254,7 @@ val dbind(val a, val b, val f) {
 }
 
 val eval_args(val l, val env, val *acc) {
-  if (!l || l->type != t_pair) return l;
+  if (type_of(l) != t_pair) return l;
   val tl = eval_args(cdr(l), env, acc); /* safe from gc b/c stored in acc */
   val hd = eval(car(l), env); /* safe from gc b/c stored in RET_VAL */
   return *acc = cons(hd, tl);
@@ -277,15 +301,13 @@ val spec_def(val b, val env) {
     cdar(env) = cons(caar(env), cdar(env));
     caar(env) = cons(k, nil);
     return cdr(caar(env)) = eval(x, env);
-  } else if (type_of(car(b)) == t_pair && type_of(caar(b)) == t_sym) {
-    cdar(env) = cons(caar(env), cdar(env));
-    caar(env) = cons(caar(b), nil);
-    return cdr(caar(env)) = spec_lambda(cons(cdar(b), cdr(b)), env);
-  } else {
+  } else if (!(type_of(car(b)) == t_pair && type_of(caar(b)) == t_sym)) {
     fprintf(stderr, err);
     panic(1);
-    return nil;
   }
+  cdar(env) = cons(caar(env), cdar(env));
+  caar(env) = cons(caar(b), nil);
+  return cdr(caar(env)) = spec_lambda(cons(cdar(b), cdr(b)), env);
 }
 
 val do_xq(val, val, val);
@@ -306,10 +328,8 @@ val spec_qquote(val v, val env) {
   return do_qq(car(v), env);
 }
 
-val spec_repl(val v, val env) {
-  repl(env);
-  return RET_VAL;
-}
+void repl(val);
+val spec_repl(val v, val env) { repl(env); return RET_VAL; }
 
 struct { val *k; val (*fn)(val, val); } forms[] = {
   { &sym_if, spec_if },
@@ -349,6 +369,7 @@ val _apply(val v) {
   return return_to(cdr(STACK));
 }
 
+val read(char **str);
 void gus_initialize() {
   gc_atomic_begin();
   root.data.pair.snd = cons(nil, cons(nil, nil));
@@ -424,22 +445,33 @@ val eqish(val v) {
   }
 }
 
+struct { char c; val *s; } qchars[] = {
+  { '\'', &sym_qt },
+  { '`', &sym_qq },
+  { ',', &sym_uq },
+  { '@', &sym_xq }
+};
+
+char quotechar(val v) {
+  for (int i = 0; i < 4; ++i) if (*qchars[i].s == v) return qchars[i].c;
+  return 0;
+}
+
+val charquote(char c) {
+  for (int i = 0; i < 4; ++i) if (qchars[i].c == c) return *qchars[i].s;
+  return nil;
+}
+
 val read_num(char**), read_sym(char**), read_str(char**), read_cons(char**);
 val read_val(char **str) {
   while (isspace(**str)) ++(*str);
   char c = **str;
   if (!c) return nil;
-  if (c == '\'' || c == '(' || c == '"' || c == '`' || c == ',' || c == '@') {
-    ++(*str);
-    return c == '\'' ? cons(sym_qt, cons(read_val(str), nil)) :
-           c == '`' ? cons(sym_qq, cons(read_val(str), nil)) :
-           c == ',' ? cons(sym_uq, cons(read_val(str), nil)) :
-           c == '@' ? cons(sym_xq, cons(read_val(str), nil)) :
-           c == '(' ? read_cons(str) :
-           read_str(str);
-  }
-  val d = read_num(str);
-  return d ? d : read_sym(str);
+  val v = charquote(c);
+  if (v) { ++(*str); return cons(v, cons(read_val(str), nil)); }
+  if (c == '(') { ++(*str); return read_cons(str); }
+  if (c == '"') { ++(*str); return read_str(str); }
+  return (v = read_num(str)) ? v : read_sym(str);
 }
 
 val read_num(char **str) {
@@ -460,12 +492,8 @@ val read_sym(char **str) {
 
 val read_str(char **str) {
   char *start = *str;
-  while (**str && **str != '"') {
-    if (**str == '\\') ++(*str);
-    ++(*str);
-  }
-  val s = new(t_str);
-  s->data.str = strndup(start, *str - start); 
+  for (; **str && **str != '"'; ++(*str)) if (**str == '\\') ++(*str);
+  val s = string(strndup(start, *str - start));
   if (**str) ++(*str);
   return s;
 }
@@ -491,14 +519,6 @@ val read(char **str) {
   val v = read_val(str);
   gc_atomic_end();
   return v;
-}
-
-char quotechar(val v) {
-  return v == sym_qt ? '\'' :
-         v == sym_qq ? '`' :
-         v == sym_uq ? ',' :
-         v == sym_xq ? '@' :
-         '\0';
 }
 
 void println(val d, FILE *f) { print(d, f); putc('\n', f); }
@@ -566,10 +586,9 @@ void repl(val env) {
 }
 
 void panic(int status) {
-  if (rescue) {
-    if (gc_atomic) gc_atomic_end();
-    longjmp(*rescue, 1);
-  } else exit(status);
+  if (!rescue) exit(status);
+  if (gc_atomic) gc_atomic_end();
+  longjmp(*rescue, 1);
 }
 
 int main() {
