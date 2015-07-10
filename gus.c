@@ -305,7 +305,17 @@ val (*special(val k))(val, val) {
 
 #define binop(n, name, tp, r) val n(val as) { arg_check(as, name, 0, 2, tp, tp); val a = car(as), b = cadr(as); return r; }
 #define binop_n(n, op) binop(n, #op, t_num, num(a->data.num op b->data.num))
-binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *) binop_n(_div, /)
+binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *)
+val _div(val as) {
+  arg_check(as, "/", 0, 2, t_num, t_num);
+  long a = car(as)->data.num, b = cadr(as)->data.num;
+  if (b == 0) {
+    fputs("error: divide by zero\n", stderr);
+    panic(1);
+  }
+  return num(a / b);
+}
+
 binop(_lt, "<", t_num, a->data.num < b->data.num ? t : nil)
 binop(_gt, ">", t_num, a->data.num > b->data.num ? t : nil)
 
