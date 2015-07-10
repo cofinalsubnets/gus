@@ -50,21 +50,16 @@ void panic(int);
 #define type_of(x) (x ? x->type : t_nil)
 #define GC_ALLOC_CYCLE (1<<15)
 #define GC_MEM_MAX (1<<25)
-#define MARKED 1
-#define ATOMIC (1<<2)
-#define IS(f,h) (h && (h->alive & f))
-#define SET(f,h) if (f) h->alive |= f
-#define UNSET(f,h) if (f) h->alive &= ~f
 #define FOREACH(i, x) for (int i = 0; i < sizeof(x)/sizeof(*x); ++i)
 
-char gc_atomic = 0;
+char gc_enabled = 1;
 unsigned long gc_allocs = 0, gc_mem = 0;
 struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 val vals = &root;
 
 void gc_mark(val v) {
-  if (!v || IS(MARKED, v)) return;
-  SET(MARKED, v);
+  if (!v || v->alive) return;
+  v->alive = 1;
   if (type_of(v) & (t_pair | t_fn | t_rw)) {
     gc_mark(car(v));
     gc_mark(cdr(v));
@@ -72,10 +67,11 @@ void gc_mark(val v) {
 }
 
 void gc() {
+  if (!gc_enabled) return;
   gc_mark(&root);
   for (val prev = NULL, v = vals; v;)
     if (v->alive) {
-      UNSET(MARKED, v);
+      v->alive = 0;
       prev = v;
       v = v->next;
     } else {
@@ -97,18 +93,12 @@ val new(t_t t) {
   val v = (val) malloc(sizeof(struct _val));
   if (!v) goto oom;
   gc_mem += sizeof(struct _val);
-  v->alive = gc_atomic, v->next = vals, v->type = t;
+  v->alive = 0, v->next = vals, v->type = t;
   memset(&(v->data), 0, sizeof(union _data));
   return vals = v;
 oom:
-  fprintf(stderr, "Out of memory after %lu allocations.\n", gc_allocs);
+  fprintf(stderr, "error: out of memory after %lu allocations.\n", gc_allocs);
   exit(1);
-}
-
-void gc_atomic_begin() { gc_atomic = ATOMIC; }
-void gc_atomic_end() {
-  gc_atomic = 0;
-  for (val v = vals; v && IS(ATOMIC, v); v = v->next) UNSET(ATOMIC, v);
 }
 
 void arg_check(val v, const char *name, int var, int req, ...) {
@@ -185,11 +175,9 @@ val _call(val tag, val a, val b) {
   }
 
   val caller = STACK;
-  STACK      = cons(nil, STACK); // FIXME: a & b may be vulnerable to GC
-  car(STACK) = cons(a, b);
-  car(STACK) = cons(nil, car(STACK));
-  car(STACK) = cons(tag, car(STACK));
-
+  gc_enabled = 0;
+  STACK = cons(cons(tag, cons(nil, cons(a, b))), STACK);
+  gc_enabled = 1;
   while (STACK != caller) caar(STACK) ? do_eval() : do_apply();
   return RET_VAL;
 }
@@ -224,9 +212,9 @@ void do_eval() {
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
   if (type_of(fn) == t_prim) return _return(fn->data.prim.fn(args));
-  gc_atomic_begin();
+  gc_enabled = 0;
   val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
-  gc_atomic_end();
+  gc_enabled = 1;
   for (; type_of(cdr(body)) == t_pair; body = cdr(body)) eval(car(body), env);
   _continue(t, car(body), env);
 }
@@ -259,12 +247,12 @@ val spec_set(val b, val env) {
 }
 
 val spec_fn(val b, val env) {
-  arg_check(b, "fn", 1, 2, t_pair | t_sym, t_any);
+  arg_check(b, "fn", 1, 2, t_pair | t_sym | t_nil, t_any);
   return lambda(b, env);
 }
 
 val spec_rw(val b, val env) {
-  arg_check(b, "rw", 1, 2, t_pair | t_sym, t_any);
+  arg_check(b, "rw", 1, 2, t_pair | t_sym | t_nil, t_any);
   return form(b, env);
 }
 
@@ -361,12 +349,12 @@ const struct { char *s; val (*const p)(val); } iprims[] = {
 };
 
 void initialize() {
-  gc_atomic_begin();
+  gc_enabled = 0;
   root.data.pair.snd = cons(nil, cons(nil, nil));
   FOREACH(i, isyms) *isyms[i].s = symbol(isyms[i].n);
   FOREACH(i, iprims) GLOBAL =
     cons(cons(symbol(iprims[i].s), prim(iprims[i].p, iprims[i].s)), GLOBAL);
-  gc_atomic_end();
+  gc_enabled = 1;
 }
 
 val eq(val args) {
@@ -464,9 +452,9 @@ val read_cons(char **str) {
 }
 
 val read(char **str) {
-  gc_atomic_begin();
+  gc_enabled = 0;
   val v = read_val(str);
-  gc_atomic_end();
+  gc_enabled = 1;
   return v;
 }
 
@@ -534,7 +522,7 @@ void repl(val env) {
 
 void panic(int status) {
   if (!rescue) exit(status);
-  if (gc_atomic) gc_atomic_end();
+  gc_enabled = 1;
   longjmp(*rescue, status);
 }
 
