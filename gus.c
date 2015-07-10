@@ -51,6 +51,7 @@ void panic(int);
 #define GC_ALLOC_CYCLE (1<<15)
 #define GC_MEM_MAX (1<<25)
 #define FOREACH(i, x) for (int i = 0; i < sizeof(x)/sizeof(*x); ++i)
+#define PANIC(s, ...) { fprintf(stderr, "error: " s, ##__VA_ARGS__); panic(1); }
 
 char gc_enabled = 1;
 unsigned long gc_allocs = 0, gc_mem = 0;
@@ -106,18 +107,10 @@ void arg_check(val v, const char *name, int var, int req, ...) {
   va_start(ap, req);
   int n;
   for (n = 0; type_of(v) == t_pair && n < req; ++n, v = cdr(v))
-    if (!(type_of(car(v)) & va_arg(ap, int))) {
-      fprintf(stderr, "error: %s: wrong type for argument %d\n", name, n+1);
-      panic(1);
-    }
-  if (v && !var) {
-    fprintf(stderr, "error: %s: too many arguments (%d needed)\n", name, req);
-    panic(1);
-  }
-  if (n < req) {
-    fprintf(stderr, "error: %s: too few arguments: %d for %d\n", name, n, req);
-    panic(1);
-  }
+    if (!(type_of(car(v)) & va_arg(ap, int)))
+      PANIC("%s: wrong type for argument %d\n", name, n+1);
+  if (v && !var) PANIC("%s: too many arguments (%d needed)\n", name, req);
+  if (n < req) PANIC("%s: not enough arguments: %d for %d\n", name, n, req);
 }
 
 #define STACK root.data.pair.fst
@@ -169,11 +162,7 @@ void _continue(val s, val a, val b) {
 
 void do_eval(), do_apply();
 val _call(val tag, val a, val b) {
-  if (++stack_height > STACK_LIMIT) {
-    fputs("error: stack overflow\n", stderr);
-    panic(1);
-  }
-
+  if (++stack_height > STACK_LIMIT) PANIC("stack overflow\n");
   val caller = STACK;
   gc_enabled = 0;
   STACK = cons(cons(tag, cons(nil, cons(a, b))), STACK);
@@ -229,14 +218,8 @@ val eval_args(val l, val env, val *acc) {
 val zip(val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
   if (ta == t_nil && tb == t_nil) return nil;
-  if (ta == t_nil) {
-    fputs("error: too many arguments\n", stderr);
-    panic(1);
-  }
-  if (tb == t_nil && ta == t_pair) {
-    fputs("error: too few arguments\n", stderr);
-    panic(1);
-  }
+  if (ta == t_nil) PANIC("too many arguments\n");
+  if (tb == t_nil && ta == t_pair) PANIC("not enought arguments\n");
   if (ta != t_pair || tb != t_pair) return cons(cons(a, b), nil);
   return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
 }
@@ -317,10 +300,7 @@ binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *)
 val _div(val as) {
   arg_check(as, "/", 0, 2, t_num, t_num);
   long a = car(as)->data.num, b = cadr(as)->data.num;
-  if (b == 0) {
-    fputs("error: divide by zero\n", stderr);
-    panic(1);
-  }
+  if (b == 0) PANIC("divide by zero\n");
   return num(a / b);
 }
 
