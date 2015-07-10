@@ -294,8 +294,10 @@ val (*special(val k))(val, val) {
   return nil;
 }
 
-#define binop(n, name, tp, r) val n(val as) { arg_check(as, name, 0, 2, tp, tp); val a = car(as), b = cadr(as); return r; }
-#define binop_n(n, op) binop(n, #op, t_num, num(a->data.num op b->data.num))
+#define unop(n, t, fn) val n(val as) { arg_check(as, #n, 0, 1, t); return fn(car(as)); }
+unop(hd, t_pair, car) unop(tl, t_pair, cdr)
+#define binop(n, name, ta, tb, r) val n(val as) { arg_check(as, name, 0, 2, ta, tb); return r; }
+#define binop_n(n, op) binop(n, #op, t_num, t_num, num(car(as)->data.num op cadr(as)->data.num))
 binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *)
 val _div(val as) {
   arg_check(as, "/", 0, 2, t_num, t_num);
@@ -304,29 +306,15 @@ val _div(val as) {
   return num(a / b);
 }
 
-binop(_lt, "<", t_num, a->data.num < b->data.num ? t : nil)
-binop(_gt, ">", t_num, a->data.num > b->data.num ? t : nil)
-
+binop(_lt, "<", t_num, t_num, car(as)->data.num < cadr(as)->data.num ? t : nil)
+binop(_gt, ">", t_num, t_num, car(as)->data.num > cadr(as)->data.num ? t : nil)
+binop(set_hd, "set-hd", t_pair, t_any, caar(as) = cadr(as))
+binop(set_tl, "set-tl", t_pair, t_any, cdar(as) = cadr(as))
+binop(_apply, "apply", t_fn | t_prim, t_pair, _call(nil, car(as), cadr(as)))
 val scurry(val n) { arg_check(n, "zzz", 0, 0); exit(0); }
-val set_hd(val as) {
-  arg_check(as, "set-hd", 0, 2, t_pair, t_any);
-  return caar(as) = cadr(as);
-}
-val set_tl(val as) {
-  arg_check(as, "set-tl", 0, 2, t_pair, t_any);
-  return cdar(as) = cadr(as);
-}
-
-#define unop(n, t, fn) val n(val as) { arg_check(as, #n, 0, 1, t); return fn(car(as)); }
-unop(hd, t_pair, car) unop(tl, t_pair, cdr)
 val _eval(val v) {
   arg_check(v, "eval", 0, 1, t_any);
   return eval_toplevel(car(v));
-}
-
-val _apply(val v) {
-  arg_check(v, "apply", 0, 2, t_fn | t_prim, t_pair);
-  return _call(nil, car(v), cadr(v));
 }
 
 const struct { val *const s; char *n; } isyms[] = {
