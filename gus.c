@@ -229,6 +229,14 @@ val eval_args(val l, val env, val *acc) {
 val zip(val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
   if (ta == t_nil && tb == t_nil) return nil;
+  if (ta == t_nil) {
+    fputs("error: too many arguments\n", stderr);
+    panic(1);
+  }
+  if (tb == t_nil && ta == t_pair) {
+    fputs("error: too few arguments\n", stderr);
+    panic(1);
+  }
   if (ta != t_pair || tb != t_pair) return cons(cons(a, b), nil);
   return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
 }
