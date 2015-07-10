@@ -179,7 +179,6 @@ void _continue(val s, val a, val b) {
 
 void do_eval(), do_apply();
 val _call(val tag, val a, val b) {
-
   if (++stack_height > STACK_LIMIT) {
     fputs("error: stack overflow\n", stderr);
     panic(1);
@@ -477,10 +476,11 @@ void print(val d, FILE *f) {
   switch (type_of(d)) {
     case t_nil:  fprintf(f, "()"); break;
     case t_num:  fprintf(f, "%ld", d->data.num); break;
-    case t_prim: fprintf(f, "<fn %s>", d->data.prim.name); break;
+    case t_prim: fprintf(f, "#%s", d->data.prim.name); break;
     case t_sym:  fputs(d->data.str, f); break;
     case t_fn:
     case t_rw:
+      fputc('#', f);
       print(cons(d->type == t_fn ? sym_fn : sym_rw, car(d)), f);
       break;
     case t_str:
