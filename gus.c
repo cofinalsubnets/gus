@@ -43,7 +43,7 @@ struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 val vals = &root;
 
 void gc_mark(val v) {
-  if (!v || v->alive)
+  if (!v || v->alive) return;
   v->alive = 1;
   if (type_of(v) & (t_pair | t_fn | t_rw)) gc_mark(car(v)), gc_mark(cdr(v));
 }
