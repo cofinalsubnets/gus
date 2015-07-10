@@ -4,40 +4,6 @@
 #include <ctype.h>
 #include <setjmp.h>
 #include <stdarg.h>
-
-typedef enum {
-  t_pair = 1,
-  t_fn   = 1<<1,
-  t_rw   = 1<<2,
-  t_prim = 1<<3,
-  t_num  = 1<<4,
-  t_sym  = 1<<5,
-  t_str  = 1<<6,
-  t_nil  = 1<<7
-} t_t;
-
-typedef struct _val {
-  union _data {
-    struct {
-      struct _val *fst;
-      struct _val *snd;
-    } pair;
-    struct {
-      struct _val* (*fn)(struct _val*);
-      char *name;
-    } prim;
-    long num;
-    char *str;
-  } data;
-  struct _val *next;
-  t_t type;
-  char alive;
-} *val;
-
-void print(val, FILE*);
-void println(val, FILE*);
-void panic(int);
-
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
 #define cdr(c) ((c)->data.pair.snd)
@@ -48,8 +14,28 @@ void panic(int);
 #define type_of(x) (x ? x->type : t_nil)
 #define GC_ALLOC_CYCLE (1<<15)
 #define GC_MEM_MAX (1<<25)
+#define STACK_MAX 10000
 #define FOREACH(i, x) for (int i = 0; i < sizeof(x)/sizeof(*x); ++i)
-#define PANIC(s, ...) { fprintf(stderr, "error: " s, ##__VA_ARGS__); panic(1); }
+#define PANIC(s, ...) fprintf(stderr, "error: " s, ##__VA_ARGS__), panic(1)
+
+typedef enum {
+  t_pair = 1,    t_fn   = 1<<1,
+  t_rw   = 1<<2, t_prim = 1<<3,
+  t_num  = 1<<4, t_sym  = 1<<5,
+  t_str  = 1<<6, t_nil  = 1<<7
+} t_t;
+
+typedef struct _val {
+  union _data {
+    struct { struct _val *fst; struct _val *snd; } pair;
+    struct { struct _val* (*fn)(struct _val*); char *name; } prim;
+    long num;
+    char *str;
+  } data;
+  struct _val *next;
+  t_t type;
+  char alive;
+} *val;
 
 char gc_enabled = 1;
 unsigned long gc_allocs = 0, gc_mem = 0;
@@ -57,7 +43,7 @@ struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 val vals = &root;
 
 void gc_mark(val v) {
-  if (!v || v->alive) return;
+  if (!v || v->alive)
   v->alive = 1;
   if (type_of(v) & (t_pair | t_fn | t_rw)) gc_mark(car(v)), gc_mark(cdr(v));
 }
@@ -66,34 +52,36 @@ void gc() {
   if (!gc_enabled) return;
   gc_mark(&root);
   for (val prev = NULL, v = vals; v;)
-    if (v->alive) {
-      v->alive = 0, prev = v, v = v->next;
-    } else {
+    if (v->alive) v->alive = 0, prev = v, v = v->next;
+    else {
       prev ? (prev->next = v->next) : (vals = v->next);
       if (v->type & (t_str | t_sym)) free(v->data.str);
       gc_mem -= sizeof(struct _val);
       free(v);
       v = (prev ? prev->next : vals);
     }
+  gc_allocs = 0;
 }
 
+void oom() { fputs("error: out of memory\n", stderr), exit(1); }
 val new(t_t t) {
   if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) {
     gc();
-    if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) goto oom;
+    if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) oom();
   }
 
-  if ((++gc_allocs) % GC_ALLOC_CYCLE == 0) gc();
+  if (++gc_allocs >= GC_ALLOC_CYCLE) gc();
   val v = (val) malloc(sizeof(struct _val));
-  if (!v) goto oom;
-  gc_mem += sizeof(struct _val);
-  v->alive = 0, v->next = vals, v->type = t;
-  memset(&(v->data), 0, sizeof(union _data));
-  return vals = v;
-oom:
-  fprintf(stderr, "error: out of memory after %lu allocations.\n", gc_allocs);
-  exit(1);
+  if (!v) oom();
+  return gc_mem += sizeof(struct _val),
+         v->alive = 0, v->next = vals, v->type = t,
+         memset(&(v->data), 0, sizeof(union _data)),
+         vals = v;
 }
+
+void print(val, FILE*);
+void println(val, FILE*);
+void panic(int);
 
 const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_str | t_nil;
 void tc(val v, const char *name, int var, int req, ...) {
@@ -114,42 +102,40 @@ val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
     sym_xq, sym_repl, (*special(val))(val, val), eval_args(val, val, val*),
     assq_c(val, val), zip(val, val);
 
-val cons(val a, val b) { val r = new(t_pair); return car(r) = a, cdr(r) = b, r; }
-val lambda(val a, val b) { val r = new(t_fn); return car(r) = a, cdr(r) = b, r; }
-val form(val a, val b) { val r = new(t_rw); return car(r) = a, cdr(r) = b, r; }
-val string(char *s) { val r = new(t_str); return r->data.str = strdup(s), r; }
-val num(long l) { val r = new(t_num); return r->data.num = l, r; }
+val cons(val a, val b) { val r; return r = new(t_pair), car(r) = a, cdr(r) = b, r; }
+val lambda(val a, val b) { val r; return r = new(t_fn), car(r) = a, cdr(r) = b, r; }
+val form(val a, val b) { val r; return r = new(t_rw), car(r) = a, cdr(r) = b, r; }
+val string(char *s) { val r; return r = new(t_str), r->data.str = strdup(s), r; }
+val num(long l) { val r; return r = new(t_num), r->data.num = l, r; }
 
 val prim(val (*const f)(val), char *n) {
-  val p = new(t_prim);
-  return p->data.prim.fn = f, p->data.prim.name = n, p;
+  val p;
+  return p = new(t_prim),
+         p->data.prim.fn = f,
+         p->data.prim.name = n, p;
 }
 
 val symbol(char *s) {
-  for (val st = SYMBOL_TABLE; st; st = cdr(st))
-    if (!strcmp(car(st)->data.str, s)) return car(st);
-  SYMBOL_TABLE = cons(nil, SYMBOL_TABLE);
-  val v = new(t_sym);
-  return v->data.str = strdup(s), car(SYMBOL_TABLE) = v;
+  val v;
+  for (v = SYMBOL_TABLE; v; v = cdr(v))
+    if (!strcmp(car(v)->data.str, s)) return car(v);
+  return SYMBOL_TABLE = cons(nil, SYMBOL_TABLE),
+         v = new(t_sym),
+         v->data.str = strdup(s),
+         car(SYMBOL_TABLE) = v;
 }
 
-#define STACK_LIMIT 10000
+void do_eval(), do_apply();
 unsigned long stack_height = 0;
-void _return(val x) {
-  RET_VAL = x, STACK = cdr(STACK), --stack_height;
-}
-
+void _return(val x) { RET_VAL = x, STACK = cdr(STACK), --stack_height; }
 void _continue(val s, val a, val b) {
   caar(STACK)       = s;
   car(cdar(STACK))  = nil;
   cadr(cdar(STACK)) = a;
   cddr(cdar(STACK)) = b;
 }
-
-void do_eval(), do_apply();
-#define eval(d, env) _call(t, d, env)
 val _call(val tag, val a, val b) {
-  if (++stack_height > STACK_LIMIT) PANIC("stack overflow\n");
+  if (++stack_height > STACK_MAX) PANIC("stack overflow\n");
   val caller = STACK;
   gc_enabled = 0;
   STACK = cons(cons(tag, cons(nil, cons(a, b))), STACK);
@@ -157,6 +143,7 @@ val _call(val tag, val a, val b) {
   while (STACK != caller) caar(STACK) ? do_eval() : do_apply();
   return RET_VAL;
 }
+#define eval(d, env) _call(t, d, env)
 
 void do_eval() {
   val ev = cdar(STACK), d = cadr(ev), env = cddr(ev), acc, fn, (*sp)(val, val);
@@ -189,18 +176,19 @@ void do_apply() {
 }
 
 val eval_args(val l, val env, val *acc) {
+  val tl;
   if (type_of(l) != t_pair) return l;
-  val tl = eval_args(cdr(l), env, acc); /* safe from gc b/c stored in acc */
-  return *acc = cons(eval(car(l), env), tl); /* hd is in RET_VAL when consed */
+  return tl = eval_args(cdr(l), env, acc),   /* safe from gc b/c stored in acc */
+         *acc = cons(eval(car(l), env), tl); /* hd is in RET_VAL when consed */
 }
 
 val zip(val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
   if (ta == t_nil && tb == ta) return nil;
   if (ta == t_nil) PANIC("too many arguments\n");
-  if (ta == t_pair && tb != ta) PANIC("not enought arguments\n");
-  if (ta != t_pair) return cons(cons(a, b), nil);
-  return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
+  if (ta == t_pair && tb != ta) PANIC("not enough arguments\n");
+  return ta != t_pair ? cons(cons(a, b), nil) :
+                        cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
 }
 
 val spec_if(val b, val env) {
@@ -216,44 +204,50 @@ val spec_set(val b, val env) {
 }
 
 val spec_fn(val b, val env) {
-  return tc(b, "fn", 1, 2, t_pair | t_sym | t_nil, t_any), lambda(b, env);
+  return tc(b, "fn", 1, 2, t_pair | t_sym | t_nil, t_any),
+         lambda(b, env);
 }
 
 val spec_rw(val b, val env) {
-  return tc(b, "rw", 1, 2, t_pair | t_sym | t_nil, t_any), form(b, env);
+  return tc(b, "rw", 1, 2, t_pair | t_sym | t_nil, t_any),
+         form(b, env);
 }
 
 val spec_qt(val v, val env) {
-  return tc(v, "qt", 0, 1, t_any), car(v);
+  return tc(v, "qt", 0, 1, t_any),
+         car(v);
 }
 
 val spec_def(val b, val env) {
-  tc(b, "def", 0, 2, t_sym, t_any);
-  car(cdar(STACK)) = cons(car(b), eval(cadr(b), env));
-  cdar(env) = cons(caar(env), cdar(env));
-  caar(env) = car(cdar(STACK));
-  return cdar(cdar(STACK));
+  return tc(b, "def", 0, 2, t_sym, t_any),
+         car(cdar(STACK)) = cons(car(b), eval(cadr(b), env)),
+         cdar(env) = cons(caar(env), cdar(env)),
+         caar(env) = car(cdar(STACK)),
+         cdar(cdar(STACK));
 }
 
 val xq(val, val, val);
 val qq(val v, val env) {
-  if (type_of(v) != t_pair || car(v) == sym_qq) return v;
-  else if (car(v) == sym_uq) return eval(cadr(v), env);
-  else if (type_of(car(v)) == t_pair && caar(v) == sym_xq)
-    return xq(eval(car(cdar(v)), env), cdr(v), env);
-  else return cons(qq(car(v), env), qq(cdr(v), env));
+  return type_of(v) != t_pair || car(v) == sym_qq       ? v :
+         car(v) == sym_uq                               ? eval(cadr(v), env) :
+         type_of(car(v)) == t_pair && caar(v) == sym_xq ?
+           xq(eval(car(cdar(v)), env), cdr(v), env) :
+           cons(qq(car(v), env), qq(cdr(v), env));
 }
 
 val xq(val a, val d, val env) {
-  return type_of(a) == t_pair ? cons(car(a), xq(cdr(a), d, env)) : qq(d, env);
+  return type_of(a) == t_pair ?
+           cons(car(a), xq(cdr(a), d, env)) :
+           qq(d, env);
 }
 
 val spec_qq(val v, val env) {
-  return tc(v, "qq", 0, 1, t_any), qq(car(v), env); /* FIXME: gc-unsafe! */
+  return tc(v, "qq", 0, 1, t_any),
+         qq(car(v), env); /* FIXME: gc-unsafe! */
 }
 
 void repl(val);
-val spec_repl(val v, val env) { repl(env); return RET_VAL; }
+val spec_repl(val v, val env) { return repl(env), RET_VAL; }
 
 val (*special(val k))(val, val) {
   static const struct { val *const k; val (*const fn)(val, val); } sfs[] = {
@@ -286,15 +280,24 @@ binop(_gt, ">", t_num, t_num, car(as)->data.num > cadr(as)->data.num ? t : nil)
 binop(set_hd, "set-hd", t_pair, t_any, caar(as) = cadr(as))
 binop(set_tl, "set-tl", t_pair, t_any, cdar(as) = cadr(as))
 binop(_apply, "apply", t_fn | t_prim, t_pair, _call(nil, car(as), cadr(as)))
-val scurry(val n) { tc(n, "zzz", 0, 0); exit(0); }
-val _eval(val v) { return tc(v, "eval", 0, 1, t_any), eval(car(v), GLOBAL); }
+
+val scurry(val n) {
+  tc(n, "zzz", 0, 0), exit(0);
+}
+
+val _eval(val v) {
+  return tc(v, "eval", 0, 1, t_any),
+         eval(car(v), GLOBAL);
+}
 
 val eq(val args) {
-  return tc(args, "eq", 0, 2, t_any, t_any), car(args) == cadr(args) ? t : nil;
+  return tc(args, "eq", 0, 2, t_any, t_any),
+         car(args) == cadr(args) ? t : nil;
 }
 
 val assq(val args) {
-  return tc(args, "assq", 0, 2, t_any, t_pair), assq_c(car(args), cadr(args));
+  return tc(args, "assq", 0, 2, t_any, t_pair),
+         assq_c(car(args), cadr(args));
 }
 
 val assq_c(val k, val kvs) {
@@ -356,37 +359,33 @@ val charquote(char c) {
 
 val read_num(char**), read_sym(char**), read_str(char**), read_cons(char**);
 val read_val(char **str) {
+  char c; val v;
   while (isspace(**str)) ++(*str);
-  char c = **str;
-  if (!c) return nil;
-  val v = charquote(c);
-  if (v) return ++(*str), cons(v, cons(read_val(str), nil));
-  if (c == '(') return ++(*str), read_cons(str);
-  if (c == '"') return ++(*str), read_str(str);
-  return (v = read_num(str)) ? v : read_sym(str);
+  return !(c = **str)        ?  nil :
+         (v = charquote(c))  ? (++(*str), cons(v, cons(read_val(str), nil))) :
+         c == '('            ? (++(*str), read_cons(str)) :
+         c == '"'            ? (++(*str), read_str(str)) :
+         (v = read_num(str)) ? v : read_sym(str);
 }
 
 val read_num(char **str) {
-  char *end = NULL;
-  long n = strtol(*str, &end, 10);
-  if (*str == end) return NULL; 
-  return *str = end, num(n);
+  char *end; long n;
+  return n = strtol(*str, &end, 10),
+         *str == end ? NULL : (*str = end, num(n));
 }
 
 val read_sym(char **str) {
   char buf[100];
-  memset(buf, 0, 100);
-  sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf);
-  *str += strlen(buf);
-  return symbol(buf);
+  return memset(buf, 0, 100),
+         sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf),
+         *str += strlen(buf),
+         symbol(buf);
 }
 
 val read_str(char **str) {
-  char *start = *str;
-  for (; **str && **str != '"'; ++(*str)) if (**str == '\\') ++(*str);
-  val s = string(strndup(start, *str - start));
-  if (**str) ++(*str);
-  return s;
+  char *i;
+  for (i = *str; **str && **str != '"'; ++(*str)) if (**str == '\\') ++(*str);
+  return string(strndup(i, (**str ? (*str)++ : *str) - i));
 }
 
 val read_cons(char **str) {
@@ -404,15 +403,16 @@ val read_cons(char **str) {
 }
 
 val read(char **str) {
-  gc_enabled = 0;
-  val v = read_val(str);
-  gc_enabled = 1;
-  return v;
+  val v;
+  return gc_enabled = 0,
+         v = read_val(str),
+         gc_enabled = 1,
+         v;
 }
 
 void println(val d, FILE *f) { print(d, f); putc('\n', f); }
 void print(val d, FILE *f) {
-  char q;
+  char q, *c;
   switch (type_of(d)) {
     case t_nil:  fprintf(f, "()"); break;
     case t_num:  fprintf(f, "%ld", d->data.num); break;
@@ -424,16 +424,15 @@ void print(val d, FILE *f) {
       break;
     case t_str:
       putc('"', f);
-      for (char *c = d->data.str; *c; ++c)
+      for (c = d->data.str; *c; ++c)
         *c == '"' ? fprintf(f, "\\\"") : putc(*c, f);
       putc('"', f);
       break;
     case t_pair:
-      if ((q = quotechar(car(d))) && type_of(cdr(d)) == t_pair) {
+      if ((q = quotechar(car(d))) && type_of(cdr(d)) == t_pair)
         putc(q, f), print(cadr(d), f);
-      } else {
-        putc('(', f);
-        print(car(d), f);
+      else {
+        putc('(', f), print(car(d), f);
         for (d = cdr(d); type_of(d) == t_pair; d = cdr(d))
           putc(' ', f), print(car(d), f);
         if (d) fprintf(f, " . "), print(d, f);
@@ -449,26 +448,18 @@ void repl(val env) {
   rescue = &jb;
   val sp = STACK;
   RET_VAL = nil;
-
   printf(">> ");
   while ((b = fgets(buf, 1024, stdin))) {
     if (setjmp(jb)) STACK = sp;
     else RET_VAL = eval(read(&b), env), printf("=> "), println(RET_VAL, stdout);
     printf(">> ");
   }
-
   rescue = old;
   putchar('\n');
 }
 
 void panic(int status) {
-  if (!rescue) exit(status);
-  gc_enabled = 1;
-  longjmp(*rescue, status);
+  rescue ? (gc_enabled = 1, longjmp(*rescue, status)) : exit(status);
 }
 
-int main() {
-  initialize();
-  repl(GLOBAL);
-  return 0;
-}
+int main() { return initialize(), repl(GLOBAL), 0; }
