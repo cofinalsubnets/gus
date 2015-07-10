@@ -7,16 +7,14 @@
 
 typedef enum {
   t_pair = 1,
-  t_fn = 1<<1,
-  t_rw = 1<<2,
+  t_fn   = 1<<1,
+  t_rw   = 1<<2,
   t_prim = 1<<3,
-  t_num = 1<<4,
-  t_sym = 1<<5,
-  t_str = 1<<6,
-  t_nil = 1<<7
+  t_num  = 1<<4,
+  t_sym  = 1<<5,
+  t_str  = 1<<6,
+  t_nil  = 1<<7
 } t_t;
-
-const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_str | t_nil;
 
 typedef struct _val {
   union _data {
@@ -61,10 +59,7 @@ val vals = &root;
 void gc_mark(val v) {
   if (!v || v->alive) return;
   v->alive = 1;
-  if (type_of(v) & (t_pair | t_fn | t_rw)) {
-    gc_mark(car(v));
-    gc_mark(cdr(v));
-  }
+  if (type_of(v) & (t_pair | t_fn | t_rw)) gc_mark(car(v)), gc_mark(cdr(v));
 }
 
 void gc() {
@@ -72,9 +67,7 @@ void gc() {
   gc_mark(&root);
   for (val prev = NULL, v = vals; v;)
     if (v->alive) {
-      v->alive = 0;
-      prev = v;
-      v = v->next;
+      v->alive = 0, prev = v, v = v->next;
     } else {
       prev ? (prev->next = v->next) : (vals = v->next);
       if (v->type & (t_str | t_sym)) free(v->data.str);
@@ -102,10 +95,10 @@ oom:
   exit(1);
 }
 
-void arg_check(val v, const char *name, int var, int req, ...) {
-  va_list ap;
+const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_str | t_nil;
+void tc(val v, const char *name, int var, int req, ...) {
+  va_list ap; int n;
   va_start(ap, req);
-  int n;
   for (n = 0; type_of(v) == t_pair && n < req; ++n, v = cdr(v))
     if (!(type_of(car(v)) & va_arg(ap, int)))
       PANIC("%s: wrong type for argument %d\n", name, n+1);
@@ -118,21 +111,18 @@ void arg_check(val v, const char *name, int var, int req, ...) {
 #define GLOBAL cadr(root.data.pair.snd)
 #define SYMBOL_TABLE cddr(root.data.pair.snd)
 val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
-    sym_xq, sym_repl, _eval(val), _apply(val), (*special(val))(val, val),
-    eval_args(val, val, val*), assq_c(val, val), zip(val, val);
+    sym_xq, sym_repl, (*special(val))(val, val), eval_args(val, val, val*),
+    assq_c(val, val), zip(val, val);
 
-#define ctor1(t, s, v) { val r = new(t); r->data.s = v; return r; }
-#define ctor2(t, a, b) { val r = new(t); car(r) = a; cdr(r) = b; return r; }
-val cons(val car, val cdr)   ctor2(t_pair, car, cdr)
-val lambda(val def, val env) ctor2(t_fn, def, env)
-val form(val def, val env)   ctor2(t_rw, def, env)
-val string(char *s)          ctor1(t_str, str, strdup(s))
-val num(long l)              ctor1(t_num, num, l)
+val cons(val a, val b) { val r = new(t_pair); return car(r) = a, cdr(r) = b, r; }
+val lambda(val a, val b) { val r = new(t_fn); return car(r) = a, cdr(r) = b, r; }
+val form(val a, val b) { val r = new(t_rw); return car(r) = a, cdr(r) = b, r; }
+val string(char *s) { val r = new(t_str); return r->data.str = strdup(s), r; }
+val num(long l) { val r = new(t_num); return r->data.num = l, r; }
 
 val prim(val (*const f)(val), char *n) {
   val p = new(t_prim);
-  p->data.prim.fn = f, p->data.prim.name = n;
-  return p;
+  return p->data.prim.fn = f, p->data.prim.name = n, p;
 }
 
 val symbol(char *s) {
@@ -140,17 +130,13 @@ val symbol(char *s) {
     if (!strcmp(car(st)->data.str, s)) return car(st);
   SYMBOL_TABLE = cons(nil, SYMBOL_TABLE);
   val v = new(t_sym);
-  v->data.str = strdup(s);
-  return car(SYMBOL_TABLE) = v;
+  return v->data.str = strdup(s), car(SYMBOL_TABLE) = v;
 }
 
 #define STACK_LIMIT 10000
 unsigned long stack_height = 0;
-
 void _return(val x) {
-  RET_VAL = x;
-  STACK   = cdr(STACK);
-  --stack_height;
+  RET_VAL = x, STACK = cdr(STACK), --stack_height;
 }
 
 void _continue(val s, val a, val b) {
@@ -161,6 +147,7 @@ void _continue(val s, val a, val b) {
 }
 
 void do_eval(), do_apply();
+#define eval(d, env) _call(t, d, env)
 val _call(val tag, val a, val b) {
   if (++stack_height > STACK_LIMIT) PANIC("stack overflow\n");
   val caller = STACK;
@@ -170,9 +157,6 @@ val _call(val tag, val a, val b) {
   while (STACK != caller) caar(STACK) ? do_eval() : do_apply();
   return RET_VAL;
 }
-
-#define eval(d, env) _call(t, d, env)
-#define eval_toplevel(v) eval(v, cons(GLOBAL, nil))
 
 void do_eval() {
   val ev = cdar(STACK), d = cadr(ev), env = cddr(ev), acc, fn, (*sp)(val, val);
@@ -184,15 +168,11 @@ void do_eval() {
         return _continue(t, _call(nil, fn, cdr(d)), env);
       if (type_of(fn) & (t_prim | t_fn))
         return _continue(nil, fn, eval_args(cdr(d), env, &cdr(acc)));
-      fprintf(stderr, "error: not applicable: ");
-      println(fn, stderr);
-      panic(1);
+      fprintf(stderr, "error: not applicable: "), println(fn, stderr), panic(1);
     case t_sym:
       for (; env; env = cdr(env))
         if ((acc = assq_c(d, car(env)))) return _return(cdr(acc));
-      fprintf(stderr, "error: not defined: ");
-      println(d, stderr);
-      panic(1);
+      fprintf(stderr, "error: not defined: "), println(d, stderr), panic(1);
     default:
       _return(d);
   }
@@ -211,51 +191,45 @@ void do_apply() {
 val eval_args(val l, val env, val *acc) {
   if (type_of(l) != t_pair) return l;
   val tl = eval_args(cdr(l), env, acc); /* safe from gc b/c stored in acc */
-  val hd = eval(car(l), env); /* safe from gc b/c stored in RET_VAL */
-  return *acc = cons(hd, tl);
+  return *acc = cons(eval(car(l), env), tl); /* hd is in RET_VAL when consed */
 }
 
 val zip(val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
-  if (ta == t_nil && tb == t_nil) return nil;
+  if (ta == t_nil && tb == ta) return nil;
   if (ta == t_nil) PANIC("too many arguments\n");
-  if (tb == t_nil && ta == t_pair) PANIC("not enought arguments\n");
-  if (ta != t_pair || tb != t_pair) return cons(cons(a, b), nil);
+  if (ta == t_pair && tb != ta) PANIC("not enought arguments\n");
+  if (ta != t_pair) return cons(cons(a, b), nil);
   return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
 }
 
 val spec_if(val b, val env) {
-  arg_check(b, "if", 0, 3, t_any, t_any, t_any);
-  return eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
+  return tc(b, "if", 0, 3, t_any, t_any, t_any),
+         eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env);
 }
 
 val spec_set(val b, val env) {
-  arg_check(b, "set", 0, 2, t_sym, t_any);
-  val kv, k = car(b);
-  for (; env; env = cdr(env)) if ((kv = assq_c(k, car(env))))
-    return cdr(kv) = eval(cadr(b), env);
+  tc(b, "set", 0, 2, t_sym, t_any);
+  for (val kv, k = car(b); env; env = cdr(env))
+    if ((kv = assq_c(k, car(env)))) return cdr(kv) = eval(cadr(b), env);
   return nil;
 }
 
 val spec_fn(val b, val env) {
-  arg_check(b, "fn", 1, 2, t_pair | t_sym | t_nil, t_any);
-  return lambda(b, env);
+  return tc(b, "fn", 1, 2, t_pair | t_sym | t_nil, t_any), lambda(b, env);
 }
 
 val spec_rw(val b, val env) {
-  arg_check(b, "rw", 1, 2, t_pair | t_sym | t_nil, t_any);
-  return form(b, env);
+  return tc(b, "rw", 1, 2, t_pair | t_sym | t_nil, t_any), form(b, env);
 }
 
 val spec_qt(val v, val env) {
-  arg_check(v, "qt", 0, 1, t_any);
-  return car(v);
+  return tc(v, "qt", 0, 1, t_any), car(v);
 }
 
 val spec_def(val b, val env) {
-  arg_check(b, "def", 0, 2, t_sym, t_any);
-  car(cdar(STACK))  = cons(car(b), nil);
-  cdar(cdar(STACK)) = eval(cadr(b), env);
+  tc(b, "def", 0, 2, t_sym, t_any);
+  car(cdar(STACK)) = cons(car(b), eval(cadr(b), env));
   cdar(env) = cons(caar(env), cdar(env));
   caar(env) = car(cdar(STACK));
   return cdar(cdar(STACK));
@@ -275,32 +249,33 @@ val xq(val a, val d, val env) {
 }
 
 val spec_qq(val v, val env) {
-  arg_check(v, "qq", 0, 1, t_any);
-  return qq(car(v), env);
+  return tc(v, "qq", 0, 1, t_any), qq(car(v), env); /* FIXME: gc-unsafe! */
 }
 
 void repl(val);
 val spec_repl(val v, val env) { repl(env); return RET_VAL; }
 
-const struct { val *const k; val (*const fn)(val, val); } sforms[] = {
-  { &sym_if, spec_if },   { &sym_def, spec_def },
-  { &sym_set, spec_set }, { &sym_fn, spec_fn },
-  { &sym_rw, spec_rw },   { &sym_qt, spec_qt },
-  { &sym_qq, spec_qq },   { &sym_repl, spec_repl }
-};
-
 val (*special(val k))(val, val) {
-  FOREACH(i, sforms) if (*sforms[i].k == k) return sforms[i].fn;
+  static const struct { val *const k; val (*const fn)(val, val); } sfs[] = {
+    { &sym_if, spec_if },   { &sym_def, spec_def },
+    { &sym_set, spec_set }, { &sym_fn, spec_fn },
+    { &sym_rw, spec_rw },   { &sym_qt, spec_qt },
+    { &sym_qq, spec_qq },   { &sym_repl, spec_repl }
+  };
+  FOREACH(i, sfs) if (*sfs[i].k == k) return sfs[i].fn;
   return nil;
 }
 
-#define unop(n, t, fn) val n(val as) { arg_check(as, #n, 0, 1, t); return fn(car(as)); }
+#define unop(n, t, fn) val n(val as) { return tc(as, #n, 0, 1, t), fn(car(as)); }
 unop(hd, t_pair, car) unop(tl, t_pair, cdr)
-#define binop(n, name, ta, tb, r) val n(val as) { arg_check(as, name, 0, 2, ta, tb); return r; }
+#define typep(n, nn, ts) val tp_##n(val as) { return tc(as, nn, 0, 1, t_any), type_of(car(as)) & (ts) ? t : nil; }
+typep(pair, "pair?", t_pair) typep(num, "num?", t_num) typep(str, "str?", t_str)
+typep(sym, "sym?", t_sym) typep(fn, "fn?", t_fn | t_prim) typep(rw, "rw?", t_rw)
+#define binop(n, name, ta, tb, r) val n(val as) { return tc(as, name, 0, 2, ta, tb), r; }
 #define binop_n(n, op) binop(n, #op, t_num, t_num, num(car(as)->data.num op cadr(as)->data.num))
 binop_n(_add, +) binop_n(_sub, -) binop_n(_mul, *)
 val _div(val as) {
-  arg_check(as, "/", 0, 2, t_num, t_num);
+  tc(as, "/", 0, 2, t_num, t_num);
   long a = car(as)->data.num, b = cadr(as)->data.num;
   if (b == 0) PANIC("divide by zero\n");
   return num(a / b);
@@ -311,46 +286,15 @@ binop(_gt, ">", t_num, t_num, car(as)->data.num > cadr(as)->data.num ? t : nil)
 binop(set_hd, "set-hd", t_pair, t_any, caar(as) = cadr(as))
 binop(set_tl, "set-tl", t_pair, t_any, cdar(as) = cadr(as))
 binop(_apply, "apply", t_fn | t_prim, t_pair, _call(nil, car(as), cadr(as)))
-val scurry(val n) { arg_check(n, "zzz", 0, 0); exit(0); }
-val _eval(val v) {
-  arg_check(v, "eval", 0, 1, t_any);
-  return eval_toplevel(car(v));
-}
-
-const struct { val *const s; char *n; } isyms[] = {
-  { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
-  { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
-  { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
-  { &sym_xq, "xq" },   { &sym_repl, "repl" }
-};
-
-val assq(val), eq(val), eqish(val);
-const struct { char *s; val (*const p)(val); } iprims[] = {
-  { "assq", assq },     { "+", _add },       { "-", _sub },
-  { "*", _mul },        { "/", _div },       { "zzz", scurry },
-  { "<", _lt },         { ">", _gt },        { "set-hd", set_hd },
-  { "set-tl", set_tl }, { "=", eqish },      { "eq?", eq },
-  { "eval", _eval },    { "apply", _apply }, { "hd", hd },
-  { "tl", tl }
-};
-
-void initialize() {
-  gc_enabled = 0;
-  root.data.pair.snd = cons(nil, cons(nil, nil));
-  FOREACH(i, isyms) *isyms[i].s = symbol(isyms[i].n);
-  FOREACH(i, iprims) GLOBAL =
-    cons(cons(symbol(iprims[i].s), prim(iprims[i].p, iprims[i].s)), GLOBAL);
-  gc_enabled = 1;
-}
+val scurry(val n) { tc(n, "zzz", 0, 0); exit(0); }
+val _eval(val v) { return tc(v, "eval", 0, 1, t_any), eval(car(v), GLOBAL); }
 
 val eq(val args) {
-  arg_check(args, "eq", 0, 2, t_any, t_any);
-  return car(args) == cadr(args) ? t : nil;
+  return tc(args, "eq", 0, 2, t_any, t_any), car(args) == cadr(args) ? t : nil;
 }
 
 val assq(val args) {
-  arg_check(args, "assq", 0, 2, t_any, t_pair);
-  return assq_c(car(args), cadr(args));
+  return tc(args, "assq", 0, 2, t_any, t_pair), assq_c(car(args), cadr(args));
 }
 
 val assq_c(val k, val kvs) {
@@ -360,7 +304,7 @@ val assq_c(val k, val kvs) {
 }
 
 val eqish(val v) {
-  arg_check(v, "=", 0, 2, t_any, t_any);
+  tc(v, "=", 0, 2, t_any, t_any);
   val a = car(v), b = cadr(v);
   if (a == b) return t;
   if (type_of(a) != type_of(b)) return nil;
@@ -369,6 +313,31 @@ val eqish(val v) {
     case t_num:  return a->data.num == b->data.num ? t : nil;
     default:     return nil;
   }
+}
+
+void initialize() {
+  static const struct { val *const s; char *n; } syms[] = {
+    { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
+    { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
+    { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
+    { &sym_xq, "xq" },   { &sym_repl, "repl" }
+  };
+  static const struct { char *s; val (*const p)(val); } prims[] = {
+    { "assq", assq },     { "+", _add },         { "-", _sub },
+    { "*", _mul },        { "/", _div },         { "zzz", scurry },
+    { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
+    { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
+    { "eval", _eval },    { "apply", _apply },   { "hd", hd },
+    { "tl", tl },         { "pair?", tp_pair },  { "num?", tp_num },
+    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
+    { "rw?", tp_rw }
+  };
+  gc_enabled = 0;
+  root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
+  FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
+  FOREACH(i, prims) car(GLOBAL) =
+    cons(cons(symbol(prims[i].s), prim(prims[i].p, prims[i].s)), car(GLOBAL));
+  gc_enabled = 1;
 }
 
 const struct { const char c; val *const s; } qchars[] = {
@@ -391,18 +360,17 @@ val read_val(char **str) {
   char c = **str;
   if (!c) return nil;
   val v = charquote(c);
-  if (v) { ++(*str); return cons(v, cons(read_val(str), nil)); }
-  if (c == '(') { ++(*str); return read_cons(str); }
-  if (c == '"') { ++(*str); return read_str(str); }
+  if (v) return ++(*str), cons(v, cons(read_val(str), nil));
+  if (c == '(') return ++(*str), read_cons(str);
+  if (c == '"') return ++(*str), read_str(str);
   return (v = read_num(str)) ? v : read_sym(str);
 }
 
 val read_num(char **str) {
   char *end = NULL;
   long n = strtol(*str, &end, 10);
-  if (*str == end) return NULL;
-  *str = end;
-  return num(n);
+  if (*str == end) return NULL; 
+  return *str = end, num(n);
 }
 
 val read_sym(char **str) {
@@ -424,17 +392,15 @@ val read_str(char **str) {
 val read_cons(char **str) {
   while (isspace(**str)) ++(*str);
   char c = **str;
-  val v;
   if (!c) return nil;
-  if (c == ')') { ++(*str); return nil; }
+  if (c == ')') return ++(*str), nil;
   if (c == '.') {
     ++(*str);
-    v = read_val(str);
+    val v = read_val(str);
     while (*((*str)++) != ')');
     return v;
   }
-  v = read_val(str);
-  return cons(v, read_cons(str));
+  return cons(read_val(str), read_cons(str));
 }
 
 val read(char **str) {
@@ -454,8 +420,7 @@ void print(val d, FILE *f) {
     case t_sym:  fputs(d->data.str, f); break;
     case t_fn:
     case t_rw:
-      fputc('#', f);
-      print(cons(d->type == t_fn ? sym_fn : sym_rw, car(d)), f);
+      fputc('#', f), print(cons(d->type == t_fn ? sym_fn : sym_rw, car(d)), f);
       break;
     case t_str:
       putc('"', f);
@@ -465,19 +430,13 @@ void print(val d, FILE *f) {
       break;
     case t_pair:
       if ((q = quotechar(car(d))) && type_of(cdr(d)) == t_pair) {
-        putc(q, f);
-        print(cadr(d), f);
+        putc(q, f), print(cadr(d), f);
       } else {
         putc('(', f);
         print(car(d), f);
-        for (d = cdr(d); type_of(d) == t_pair; d = cdr(d)) {
-          putc(' ', f);
-          print(car(d), f);
-        }
-        if (d) {
-          fprintf(f, " . ");
-          print(d, f);
-        }
+        for (d = cdr(d); type_of(d) == t_pair; d = cdr(d))
+          putc(' ', f), print(car(d), f);
+        if (d) fprintf(f, " . "), print(d, f);
         putc(')', f);
       }
   }
@@ -494,11 +453,7 @@ void repl(val env) {
   printf(">> ");
   while ((b = fgets(buf, 1024, stdin))) {
     if (setjmp(jb)) STACK = sp;
-    else {
-      RET_VAL = eval(read(&b), env);
-      printf("=> ");
-      println(RET_VAL, stdout);
-    }
+    else RET_VAL = eval(read(&b), env), printf("=> "), println(RET_VAL, stdout);
     printf(">> ");
   }
 
@@ -514,6 +469,6 @@ void panic(int status) {
 
 int main() {
   initialize();
-  repl(cons(GLOBAL, nil));
+  repl(GLOBAL);
   return 0;
 }
