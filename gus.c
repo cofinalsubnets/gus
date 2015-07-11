@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <setjmp.h>
 #include <stdarg.h>
+#include "lib.h"
 
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
@@ -44,20 +45,17 @@ struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 void gc_mark(val v) {
   if (v && !v->alive) {
     v->alive = 1;
-    if (type_of(v) & (t_pair | t_fn | t_rw))
-      gc_mark(car(v)), gc_mark(cdr(v)); } }
+    if (type_of(v) & (t_pair | t_fn | t_rw)) gc_mark(car(v)), gc_mark(cdr(v)); } }
 
 void gc(val *vals, unsigned long *allocs, unsigned long *mem) {
   if (gc_enabled) {
-    *allocs = 0;
-    gc_mark(&root);
+    *allocs = 0, gc_mark(&root);
     for (val prev = NULL, v = *vals; v;)
       if (v->alive) v->alive = 0, prev = v, v = v->next;
       else {
         prev ? (prev->next = v->next) : (*vals = v->next);
         if (v->type & (t_str | t_sym)) free(v->data.str);
-        *mem -= sizeof(struct _val);
-        free(v);
+        free(v), *mem -= sizeof(struct _val);
         v = (prev ? prev->next : *vals); } } }
 
 void oom() { fputs("error: out of memory\n", stderr), exit(1); }
@@ -147,8 +145,8 @@ val _call(val tag, val a, val b) {
   if (++stack_height > STACK_MAX)
     PANIC("stack overflow\n");
   val caller = STACK;
-  gc_enabled = 0;
-  STACK = cons(cons(tag, cons(nil, cons(a, b))), STACK);
+  gc_enabled = 0,
+  STACK = cons(cons(tag, cons(nil, cons(a, b))), STACK),
   gc_enabled = 1;
   while (STACK != caller)
     caar(STACK) ? do_eval() : do_apply();
@@ -318,28 +316,6 @@ val eqish(val v) {
     case t_num:  return a->data.num == b->data.num ? t : nil;
     default:     return nil; } }
 
-void initialize() {
-  static const struct { val *const s; const char *n; } syms[] = {
-    { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
-    { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
-    { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
-    { &sym_xq, "xq" },   { &sym_repl, "repl" } };
-  static const struct { const char *s; val (*const p)(val); } prims[] = {
-    { "assq", assq },     { "+", _add },         { "-", _sub },
-    { "*", _mul },        { "/", _div },         { "zzz", scurry },
-    { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
-    { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
-    { "eval", _eval },    { "apply", _apply },   { "hd", hd },
-    { "tl", tl },         { "pair?", tp_pair },  { "num?", tp_num },
-    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
-    { "rw?", tp_rw } };
-  gc_enabled = 0;
-  root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
-  FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
-  FOREACH(i, prims) car(GLOBAL) =
-    cons(cons(symbol(prims[i].s), prim(prims[i].p, prims[i].s)), car(GLOBAL));
-  gc_enabled = 1; }
-
 const struct { const char c; val *const s; } qchars[] = {
   { '\'', &sym_qt }, { '`', &sym_qq }, { ',', &sym_uq },  { '@', &sym_xq } };
 
@@ -351,8 +327,9 @@ val charquote(char c) {
   FOREACH(i, qchars) if (qchars[i].c == c) return *qchars[i].s;
   return nil; }
 
-val read_num(char**), read_sym(char**), read_str(char**), read_cons(char**);
-val read_val(char **str) {
+val read_num(const char**), read_sym(const char**),
+    read_str(const char**), read_cons(const char**);
+val read_val(const char **str) {
   char c; val v;
   while (isspace(**str)) ++(*str);
   if (!(c = **str)) return nil;
@@ -363,23 +340,23 @@ val read_val(char **str) {
   else if ((v = read_num(str))) return v;
   else return read_sym(str); }
 
-val read_num(char **str) {
+val read_num(const char **str) {
   char *end; long n; return n = strtol(*str, &end, 10),
                             *str == end ? NULL : (*str = end, num(n)); }
 
-val read_sym(char **str) {
+val read_sym(const char **str) {
   char buf[100]; return memset(buf, 0, 100),
                         sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf),
                         *str += strlen(buf),
                         symbol(buf); }
 
-val read_str(char **str) {
-  char *i;
+val read_str(const char **str) {
+  const char *i;
   for (i = *str; **str && **str != '"'; ++(*str))
     if (**str == '\\') ++(*str);
   return string(strndup(i, (**str ? (*str)++ : *str) - i)); }
 
-val read_cons(char **str) {
+val read_cons(const char **str) {
   char c; val v;
   while (isspace(**str)) ++(*str);
   if (!(c = **str))  return nil;
@@ -392,7 +369,7 @@ val read_cons(char **str) {
   else return v = read_val(str),
               cons(v, read_cons(str)); }
 
-val read(char **str) {
+val read(const char **str) {
   val v; return gc_enabled = 0,
                 v = read_val(str),
                 gc_enabled = 1,
@@ -430,7 +407,7 @@ void println(val d, FILE *f) {
 
 jmp_buf *rescue = NULL;
 void repl(val env) {
-  char buf[1024], *b; jmp_buf jb, *old; val sp;
+  char buf[1024]; const char *b; jmp_buf jb, *old; val sp;
   for (old = rescue,
        rescue = &jb,
        sp = STACK,
@@ -447,5 +424,29 @@ void repl(val env) {
 void panic(int status) {
   rescue ? (gc_enabled = 1, longjmp(*rescue, status)) : exit(status); }
 
+void initialize() {
+  static const struct { val *const s; const char *n; } syms[] = {
+    { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
+    { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
+    { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
+    { &sym_xq, "xq" },   { &sym_repl, "repl" } };
+  static const struct { const char *s; val (*const p)(val); } prims[] = {
+    { "assq", assq },     { "+", _add },         { "-", _sub },
+    { "*", _mul },        { "/", _div },         { "zzz", scurry },
+    { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
+    { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
+    { "eval", _eval },    { "apply", _apply },   { "hd", hd },
+    { "tl", tl },         { "pair?", tp_pair },  { "num?", tp_num },
+    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
+    { "rw?", tp_rw } };
+  gc_enabled = 0;
+  root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
+  FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
+  FOREACH(i, prims) car(GLOBAL) =
+    cons(cons(symbol(prims[i].s), prim(prims[i].p, prims[i].s)), car(GLOBAL));
+  gc_enabled = 1; }
+
 int main() {
-  return initialize(), repl(GLOBAL), 0; }
+  const char **gl;
+  for (initialize(), gl = &GUS_LIB; **gl; eval(read(gl), GLOBAL));
+  return repl(GLOBAL), 0; }
