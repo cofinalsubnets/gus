@@ -185,10 +185,12 @@ val eval_args(val l, val env, val *acc) {
 
 val zip(val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
-  if (ta == t_nil && tb == ta) return nil;
-  if (ta == t_nil) PANIC("too many arguments\n");
-  if (ta == t_pair && tb != ta) PANIC("not enough arguments\n");
-  if (ta == t_pair) return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
+  if (ta == t_nil) {
+    if (tb == ta) return nil;
+    else PANIC("too many arguments\n"); }
+  if (ta == t_pair) {
+    if (tb == ta) return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
+    else PANIC("not enough arguments\n"); }
   return cons(cons(a, b), nil); }
 
 val spec_if(val b, val env) {
