@@ -39,9 +39,7 @@ typedef struct _val {
 } *val;
 
 char gc_enabled = 1;
-unsigned long gc_allocs = 0, gc_mem = 0;
 struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
-val vals = &root;
 
 void gc_mark(val v) {
   if (v && !v->alive) {
@@ -49,28 +47,30 @@ void gc_mark(val v) {
     if (type_of(v) & (t_pair | t_fn | t_rw))
       gc_mark(car(v)), gc_mark(cdr(v)); } }
 
-void gc() {
+void gc(val *vals, unsigned long *allocs, unsigned long *mem) {
   if (gc_enabled) {
-    gc_allocs = 0;
+    *allocs = 0;
     gc_mark(&root);
-    for (val prev = NULL, v = vals; v;)
+    for (val prev = NULL, v = *vals; v;)
       if (v->alive) v->alive = 0, prev = v, v = v->next;
       else {
-        prev ? (prev->next = v->next) : (vals = v->next);
+        prev ? (prev->next = v->next) : (*vals = v->next);
         if (v->type & (t_str | t_sym)) free(v->data.str);
-        gc_mem -= sizeof(struct _val);
+        *mem -= sizeof(struct _val);
         free(v);
-        v = (prev ? prev->next : vals); } } }
+        v = (prev ? prev->next : *vals); } } }
 
 void oom() { fputs("error: out of memory\n", stderr), exit(1); }
 val new(t_t t) {
-  if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) {
-    gc();
-    if (gc_mem + sizeof(struct _val) > GC_MEM_MAX) oom(); }
-  if (++gc_allocs >= GC_ALLOC_CYCLE) gc();
+  static unsigned long allocs = 0, mem = 0;
+  static val vals = &root;
+  if (mem + sizeof(struct _val) > GC_MEM_MAX) {
+    gc(&vals, &allocs, &mem);
+    if (mem + sizeof(struct _val) > GC_MEM_MAX) oom(); }
+  if (++allocs >= GC_ALLOC_CYCLE) gc(&vals, &allocs, &mem);
   val v = (val) malloc(sizeof(struct _val));
   if (!v) oom();
-  return gc_mem += sizeof(struct _val),
+  return mem += sizeof(struct _val),
          v->alive = 0, v->next = vals, v->type = t,
          memset(&(v->data), 0, sizeof(union _data)),
          vals = v; }
@@ -80,8 +80,9 @@ const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_str | t_nil;
 
 void tc(val v, const char *name, int var, int req, ...) {
   va_list ap; int n;
-  va_start(ap, req);
-  for (n = 0; type_of(v) == t_pair && n < req; ++n, v = cdr(v))
+  for (va_start(ap, req), n = 0;
+       type_of(v) == t_pair && n < req;
+       ++n, v = cdr(v))
     if (!(type_of(car(v)) & va_arg(ap, int)))
       PANIC("%s: wrong type for argument %d\n", name, n+1);
   if (v && !var) PANIC("%s: too many arguments (%d needed)\n", name, req);
@@ -135,9 +136,9 @@ void _return(val x) {
 #define RETURN_EVAL(d, env) return _continue(t, d, env)
 #define RETURN_APPLY(fn, args) return _continue(nil, fn, args)
 void _continue(val s, val a, val b) {
-  caar(STACK)       = s;
-  car(cdar(STACK))  = nil;
-  cadr(cdar(STACK)) = a;
+  caar(STACK)       = s,
+  car(cdar(STACK))  = nil,
+  cadr(cdar(STACK)) = a,
   cddr(cdar(STACK)) = b; }
 
 #define eval(d, env) _call(t, d, env)
@@ -174,14 +175,17 @@ void do_eval() {
       RETURN_VAL(d); } }
 
 void do_apply() {
-  val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev);
+  val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev), body, env;
   if (type_of(fn) == t_prim)
     RETURN_VAL(fn->data.prim.fn(args));
   else {
-    gc_enabled = 0;
-    val body = cdar(fn), env = car(ev) = cons(zip(caar(fn), args), cdr(fn));
-    gc_enabled = 1;
-    for (; type_of(cdr(body)) == t_pair; body = cdr(body)) eval(car(body), env);
+    for (gc_enabled = 0,
+         body = cdar(fn),
+         env = car(ev) = cons(zip(caar(fn), args), cdr(fn)),
+         gc_enabled = 1;
+         type_of(cdr(body)) == t_pair;
+         body = cdr(body))
+      eval(car(body), env);
     RETURN_EVAL(car(body), env); } }
 
 val eval_args(val l, val env, val *acc) {
@@ -205,8 +209,8 @@ val spec_if(val b, val env) {
          eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env); }
 
 val spec_set(val b, val env) {
-  tc(b, "set", 0, 2, t_sym, t_any);
-  for (val kv, k = car(b); env; env = cdr(env))
+  val kv, k;
+  for (tc(b, "set", 0, 2, t_sym, t_any), k = car(b); env; env = cdr(env))
     if ((kv = assq_c(k, car(env))))
       return cdr(kv) = eval(cadr(b), env);
   return nil; }
@@ -376,9 +380,9 @@ val read_str(char **str) {
   return string(strndup(i, (**str ? (*str)++ : *str) - i)); }
 
 val read_cons(char **str) {
+  char c; val v;
   while (isspace(**str)) ++(*str);
-  char c = **str; val v;
-  if (!c) return nil;
+  if (!(c = **str))  return nil;
   else if (c == ')') return ++(*str), nil;
   else if (c == '.') {
     ++(*str);
@@ -426,18 +430,19 @@ void println(val d, FILE *f) {
 
 jmp_buf *rescue = NULL;
 void repl(val env) {
-  char buf[1024], *b;
-  jmp_buf jb, *old = rescue;
-  val sp = STACK;
-  rescue = &jb;
-  RET_VAL = nil;
-  for (printf(">> "); (b = fgets(buf, 1024, stdin)); printf(">> "))
+  char buf[1024], *b; jmp_buf jb, *old; val sp;
+  for (old = rescue,
+       rescue = &jb,
+       sp = STACK,
+       RET_VAL = nil,
+       printf(">> ");
+       (b = fgets(buf, 1024, stdin));
+       printf(">> "))
     if (setjmp(jb)) STACK = sp;
     else RET_VAL = eval(read(&b), env),
          printf("=> "),
          println(RET_VAL, stdout);
-  rescue = old;
-  putchar('\n'); }
+  rescue = old, putchar('\n'); }
 
 void panic(int status) {
   rescue ? (gc_enabled = 1, longjmp(*rescue, status)) : exit(status); }
