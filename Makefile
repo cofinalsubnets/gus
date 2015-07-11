@@ -15,3 +15,4 @@ lib.h: lib.gus
 clean:
 	@rm lib.h gus
 
+.PHONY: clean
