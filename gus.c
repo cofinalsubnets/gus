@@ -227,23 +227,29 @@ val spec_def(val b, val env) {
 }
 
 val xq(val, val, val);
-val qq(val v, val env) {
-  return type_of(v) != t_pair || car(v) == sym_qq       ? v :
-         car(v) == sym_uq                               ? eval(cadr(v), env) :
-         type_of(car(v)) == t_pair && caar(v) == sym_xq ?
-           xq(eval(car(cdar(v)), env), cdr(v), env) :
-           cons(qq(car(v), env), qq(cdr(v), env));
+val qq(val v, val env, int d) {
+  if (type_of(v) != t_pair) return v;
+  if (car(v) == sym_qq) return cons(sym_qq, qq(cdr(v), env, d + 1));
+  if (car(v) == sym_uq) {
+    if (d == 0) return eval(cadr(v), env);
+    else return cons(sym_uq, qq(cdr(v), env, d - 1));
+  }
+  if (type_of(car(v)) == t_pair && caar(v) == sym_xq) {
+    if (d == 0) return xq(eval(car(cdar(v)), env), cdr(v), env);
+    else return cons(sym_xq, qq(cdr(v), env, d - 1));
+  }
+  return cons(qq(car(v), env, d), qq(cdr(v), env, d));
 }
 
 val xq(val a, val d, val env) {
   return type_of(a) == t_pair ?
            cons(car(a), xq(cdr(a), d, env)) :
-           qq(d, env);
+           qq(d, env, 0);
 }
 
 val spec_qq(val v, val env) {
   return tc(v, "qq", 0, 1, t_any),
-         qq(car(v), env); /* FIXME: gc-unsafe! */
+         qq(car(v), env, 0); /* FIXME: gc-unsafe! */
 }
 
 void repl(val);
@@ -281,9 +287,7 @@ binop(set_hd, "set-hd", t_pair, t_any, caar(as) = cadr(as))
 binop(set_tl, "set-tl", t_pair, t_any, cdar(as) = cadr(as))
 binop(_apply, "apply", t_fn | t_prim, t_pair, _call(nil, car(as), cadr(as)))
 
-val scurry(val n) {
-  tc(n, "zzz", 0, 0), exit(0);
-}
+val scurry(val n) { tc(n, "zzz", 0, 0), exit(0); }
 
 val _eval(val v) {
   return tc(v, "eval", 0, 1, t_any),
@@ -361,11 +365,12 @@ val read_num(char**), read_sym(char**), read_str(char**), read_cons(char**);
 val read_val(char **str) {
   char c; val v;
   while (isspace(**str)) ++(*str);
-  return !(c = **str)        ?  nil :
-         (v = charquote(c))  ? (++(*str), cons(v, cons(read_val(str), nil))) :
-         c == '('            ? (++(*str), read_cons(str)) :
-         c == '"'            ? (++(*str), read_str(str)) :
-         (v = read_num(str)) ? v : read_sym(str);
+  if (!(c = **str)) return nil;
+  if ((v = charquote(c))) return ++(*str), cons(v, cons(read_val(str), nil));
+  if (c == '(') return ++(*str), read_cons(str);
+  if (c == '"') return ++(*str), read_str(str);
+  if ((v = read_num(str))) return v;
+  return read_sym(str);
 }
 
 val read_num(char **str) {
@@ -390,16 +395,17 @@ val read_str(char **str) {
 
 val read_cons(char **str) {
   while (isspace(**str)) ++(*str);
-  char c = **str;
+  char c = **str; val v;
   if (!c) return nil;
   if (c == ')') return ++(*str), nil;
   if (c == '.') {
     ++(*str);
-    val v = read_val(str);
+    v = read_val(str);
     while (*((*str)++) != ')');
     return v;
   }
-  return cons(read_val(str), read_cons(str));
+  v = read_val(str);
+  return cons(v, read_cons(str));
 }
 
 val read(char **str) {
