@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <setjmp.h>
 #include <stdarg.h>
+
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
 #define cdr(c) ((c)->data.pair.snd)
@@ -28,7 +29,7 @@ typedef enum {
 typedef struct _val {
   union _data {
     struct { struct _val *fst; struct _val *snd; } pair;
-    struct { struct _val* (*fn)(struct _val*); char *name; } prim;
+    struct { struct _val* (*fn)(struct _val*); const char *name; } prim;
     long num;
     char *str;
   } data;
@@ -94,20 +95,20 @@ val lambda(val a, val b) {
 val form(val a, val b) {
   val r; return r = new(t_rw), car(r) = a, cdr(r) = b, r; }
 
-val string(char *s) {
+val string(const char *s) {
   val r; return r = new(t_str), r->data.str = strdup(s), r; }
 
 val num(long l) {
   val r; return r = new(t_num), r->data.num = l, r; }
 
-val prim(val (*const f)(val), char *n) {
+val prim(val (*const f)(val), const char *n) {
   val r; return r = new(t_prim),
                 r->data.prim.fn = f,
                 r->data.prim.name = n,
                 r; }
 
 #define SYMBOL_TABLE cddr(root.data.pair.snd)
-val symbol(char *s) {
+val symbol(const char *s) {
   val v;
   for (v = SYMBOL_TABLE; v; v = cdr(v))
     if (!strcmp(car(v)->data.str, s)) return car(v);
@@ -303,12 +304,12 @@ val eqish(val v) {
     default:     return nil; } }
 
 void initialize() {
-  static const struct { val *const s; char *n; } syms[] = {
+  static const struct { val *const s; const char *n; } syms[] = {
     { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
     { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
     { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
     { &sym_xq, "xq" },   { &sym_repl, "repl" } };
-  static const struct { char *s; val (*const p)(val); } prims[] = {
+  static const struct { const char *s; val (*const p)(val); } prims[] = {
     { "assq", assq },     { "+", _add },         { "-", _sub },
     { "*", _mul },        { "/", _div },         { "zzz", scurry },
     { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
@@ -347,16 +348,14 @@ val read_val(char **str) {
   return read_sym(str); }
 
 val read_num(char **str) {
-  char *end; long n;
-  return n = strtol(*str, &end, 10),
-         *str == end ? NULL : (*str = end, num(n)); }
+  char *end; long n; return n = strtol(*str, &end, 10),
+                            *str == end ? NULL : (*str = end, num(n)); }
 
 val read_sym(char **str) {
-  char buf[100];
-  return memset(buf, 0, 100),
-         sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf),
-         *str += strlen(buf),
-         symbol(buf); }
+  char buf[100]; return memset(buf, 0, 100),
+                        sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf),
+                        *str += strlen(buf),
+                        symbol(buf); }
 
 val read_str(char **str) {
   char *i;
@@ -377,11 +376,10 @@ val read_cons(char **str) {
   return cons(v, read_cons(str)); }
 
 val read(char **str) {
-  val v;
-  return gc_enabled = 0,
-         v = read_val(str),
-         gc_enabled = 1,
-         v; }
+  val v; return gc_enabled = 0,
+                v = read_val(str),
+                gc_enabled = 1,
+                v; }
 
 void print(val d, FILE *f) {
   char q, *c;
@@ -411,10 +409,9 @@ void print(val d, FILE *f) {
         putc(')', f); } } }
 
 void println(val d, FILE *f) {
-  print(d, f); putc('\n', f); }
+  print(d, f), putc('\n', f); }
 
 jmp_buf *rescue = NULL;
-
 void repl(val env) {
   char buf[1024], *b;
   jmp_buf jb, *old = rescue;
