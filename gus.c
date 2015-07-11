@@ -6,6 +6,9 @@
 #include <stdarg.h>
 #include "lib.h"
 
+#define GC_ALLOC_CYCLE (1<<15)
+#define GC_MEM_MAX (1<<25)
+#define STACK_MAX 10000
 #define nil NULL
 #define car(c) ((c)->data.pair.fst)
 #define cdr(c) ((c)->data.pair.snd)
@@ -14,9 +17,6 @@
 #define cdar(c) cdr(car(c))
 #define cddr(c) cdr(cdr(c))
 #define type_of(x) (x ? x->type : t_nil)
-#define GC_ALLOC_CYCLE (1<<15)
-#define GC_MEM_MAX (1<<25)
-#define STACK_MAX 10000
 #define FOREACH(i, x) for (int i = 0; i < sizeof(x)/sizeof(*x); ++i)
 #define PANIC(s, ...) fprintf(stderr, "error: " s, ##__VA_ARGS__), panic(1)
 
@@ -120,9 +120,9 @@ val symbol(const char *s) {
 #define STACK root.data.pair.fst
 #define RET_VAL car(root.data.pair.snd)
 #define GLOBAL cadr(root.data.pair.snd)
-val t, sym_if, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
+val t, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
     sym_xq, sym_repl, (*special(val))(val, val), eval_args(val, val, val*),
-    assq_c(val, val), zip(val, val);
+    assq_c(val, val), zip(val, val), hd(val), tl(val);
 
 void do_eval(), do_apply();
 unsigned long stack_height = 0;
@@ -161,7 +161,7 @@ void do_eval() {
       car(ev) = acc = cons(nil, nil), fn = car(acc) = eval(car(d), env);
       if (type_of(fn) == t_rw)
         RETURN_EVAL(apply(fn, cdr(d)), env);
-      else if (type_of(fn) & (t_prim | t_fn))
+      else if (type_of(fn) & (t_prim | t_fn) || fn == t || fn == nil)
         RETURN_APPLY(fn, eval_args(cdr(d), env, &cdr(acc)));
       fprintf(stderr, "error: not applicable: "), println(fn, stderr), panic(1);
     case t_sym:
@@ -174,7 +174,9 @@ void do_eval() {
 
 void do_apply() {
   val ev = cdar(STACK), fn = cadr(ev), args = cddr(ev), body, env;
-  if (type_of(fn) == t_prim)
+  if (fn == t || fn == nil)
+    RETURN_VAL((fn ? hd : tl)(args));
+  else if (type_of(fn) == t_prim)
     RETURN_VAL(fn->data.prim.fn(args));
   else {
     for (gc_enabled = 0,
@@ -201,10 +203,6 @@ val zip(val a, val b) {
     if (tb == ta) return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
     else PANIC("not enough arguments\n"); }
   return cons(cons(a, b), nil); }
-
-val spec_if(val b, val env) {
-  return tc(b, "if", 0, 3, t_any, t_any, t_any),
-         eval(eval(car(b), env) ? cadr(b) : car(cddr(b)), env); }
 
 val spec_set(val b, val env) {
   val kv, k;
@@ -258,10 +256,10 @@ val spec_repl(val v, val env) { return repl(env), RET_VAL; }
 
 val (*special(val k))(val, val) {
   static const struct { val *const k; val (*const fn)(val, val); } sfs[] = {
-    { &sym_if, spec_if },   { &sym_def, spec_def },
-    { &sym_set, spec_set }, { &sym_fn, spec_fn },
-    { &sym_rw, spec_rw },   { &sym_qt, spec_qt },
-    { &sym_qq, spec_qq },   { &sym_repl, spec_repl } };
+    { &sym_def, spec_def }, { &sym_set, spec_set },
+    { &sym_fn, spec_fn },   { &sym_rw, spec_rw },
+    { &sym_qt, spec_qt },   { &sym_qq, spec_qq },
+    { &sym_repl, spec_repl } };
   FOREACH(i, sfs) if (*sfs[i].k == k) return sfs[i].fn;
   return nil; }
 
@@ -426,19 +424,18 @@ void panic(int status) {
 
 void initialize() {
   static const struct { val *const s; const char *n; } syms[] = {
-    { &t, "t" },         { &sym_if, "if" },     { &sym_def, "def" },
-    { &sym_set, "set" }, { &sym_fn, "fn" },     { &sym_rw, "rw" },
-    { &sym_qt, "qt" },   { &sym_qq, "qq" },     { &sym_uq, "uq" },
-    { &sym_xq, "xq" },   { &sym_repl, "repl" } };
+    { &t, "t" },         { &sym_def, "def" },   { &sym_set, "set" },
+    { &sym_fn, "fn" },   { &sym_rw, "rw" },     { &sym_qt, "qt" },
+    { &sym_qq, "qq" },   { &sym_uq, "uq" },     { &sym_xq, "xq" },
+    { &sym_repl, "repl" } };
   static const struct { const char *s; val (*const p)(val); } prims[] = {
     { "assq", assq },     { "+", _add },         { "-", _sub },
     { "*", _mul },        { "/", _div },         { "zzz", scurry },
     { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
     { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
-    { "eval", _eval },    { "apply", _apply },   { "hd", hd },
-    { "tl", tl },         { "pair?", tp_pair },  { "num?", tp_num },
-    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
-    { "rw?", tp_rw } };
+    { "eval", _eval },    { "apply", _apply },   { "pair?", tp_pair },
+    { "num?", tp_num },   { "str?", tp_str },    { "sym?", tp_sym },
+    { "fn?", tp_fn },     { "rw?", tp_rw } };
   gc_enabled = 0;
   root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
   FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
