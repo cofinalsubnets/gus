@@ -1,9 +1,6 @@
 CC := gcc
 CFLAGS := -std=gnu11 -Os -Wall -Werror -s
 
-repl: gus
-	@./gus
-
 gus: gus.c lib.h
 	@${CC} -o $@ gus.c ${CFLAGS}
 
@@ -12,7 +9,10 @@ lib.h: lib.gus
 	@sed -e 's/"/\\"/g' -e 's/.*/"&"/' lib.gus >> $@
 	@echo ";" >> $@
 
+repl: gus
+	@./gus
+
 clean:
 	@rm lib.h gus
 
-.PHONY: clean
+.PHONY: clean repl
