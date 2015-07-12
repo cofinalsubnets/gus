@@ -122,7 +122,7 @@ val symbol(const char *s) {
 #define GLOBAL cadr(root.data.pair.snd)
 val t, sym_def, sym_set, sym_fn, sym_rw, sym_qt, sym_qq, sym_uq,
     sym_xq, sym_repl, (*special(val))(val, val), eval_args(val, val, val*),
-    assq_c(val, val), zip(val, val), hd(val), tl(val);
+    assq_c(val, val), zip(val, val, val), hd(val), tl(val);
 
 void do_eval(), do_apply();
 unsigned long stack_height = 0;
@@ -181,7 +181,7 @@ void do_apply() {
   else {
     for (gc_enabled = 0,
          body = cdar(fn),
-         env = car(ev) = cons(zip(caar(fn), args), cdr(fn)),
+         env = car(ev) = cons(zip(fn, caar(fn), args), cdr(fn)),
          gc_enabled = 1;
          type_of(cdr(body)) == t_pair;
          body = cdr(body))
@@ -194,14 +194,16 @@ val eval_args(val l, val env, val *acc) {
   else return tl = eval_args(cdr(l), env, acc),     /* safe from gc b/c stored in acc */
               *acc = cons(eval(car(l), env), tl); } /* hd is in RET_VAL when consed */
 
-val zip(val a, val b) {
+val zip(val fn, val a, val b) {
   t_t ta = type_of(a), tb = type_of(b);
   if (ta == t_nil) {
     if (tb == ta) return nil;
-    else PANIC("too many arguments\n"); }
+    else fprintf(stderr, "error: too many arguments: "),
+         println(fn, stderr), panic(1); }
   else if (ta == t_pair) {
-    if (tb == ta) return cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)));
-    else PANIC("not enough arguments\n"); }
+    if (tb == ta) return cons(cons(car(a), car(b)), zip(fn, cdr(a), cdr(b)));
+    else fprintf(stderr, "error: not enough arguments: "),
+         println(fn, stderr), panic(1); }
   return cons(cons(a, b), nil); }
 
 val spec_set(val b, val env) {
@@ -279,7 +281,6 @@ val _div(val as) {
   return num(a / b); }
 
 binop(_lt, "<", t_num, t_num, car(as)->data.num < cadr(as)->data.num ? t : nil)
-binop(_gt, ">", t_num, t_num, car(as)->data.num > cadr(as)->data.num ? t : nil)
 binop(set_hd, "set-hd", t_pair, t_any, caar(as) = cadr(as))
 binop(set_tl, "set-tl", t_pair, t_any, cdar(as) = cadr(as))
 binop(_apply, "apply", t_fn | t_prim, t_pair, apply(car(as), cadr(as)))
@@ -431,7 +432,7 @@ void initialize() {
   static const struct { const char *s; val (*const p)(val); } prims[] = {
     { "assq", assq },     { "+", _add },         { "-", _sub },
     { "*", _mul },        { "/", _div },         { "zzz", scurry },
-    { "<", _lt },         { ">", _gt },          { "set-hd", set_hd },
+    { "<", _lt },         { "set-hd", set_hd },
     { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
     { "eval", _eval },    { "apply", _apply },   { "pair?", tp_pair },
     { "num?", tp_num },   { "str?", tp_str },    { "sym?", tp_sym },
