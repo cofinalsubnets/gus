@@ -1,4 +1,4 @@
 gus: small animal language.
 - gus is a toy;
-- `make repl` to get a repl;
+- `make repl`;
 - there are bugs.

@@ -21,10 +21,8 @@
 #define PANIC(s, ...) fprintf(stderr, "error: " s, ##__VA_ARGS__), panic(1)
 
 typedef enum {
-  t_pair = 1,    t_fn   = 1<<1,
-  t_rw   = 1<<2, t_prim = 1<<3,
-  t_num  = 1<<4, t_sym  = 1<<5,
-  t_str  = 1<<6, t_nil  = 1<<7
+  t_pair = 1,    t_fn   = 1<<1, t_rw   = 1<<2, t_prim = 1<<3,
+  t_num  = 1<<4, t_sym  = 1<<5, t_str  = 1<<6, t_nil  = 1<<7
 } t_t;
 
 typedef struct _val {
@@ -45,7 +43,8 @@ struct _val root = { { { nil, nil } }, NULL, t_pair, 0 };
 void gc_mark(val v) {
   if (v && !v->alive) {
     v->alive = 1;
-    if (type_of(v) & (t_pair | t_fn | t_rw)) gc_mark(car(v)), gc_mark(cdr(v)); } }
+    if (type_of(v) & (t_pair | t_fn | t_rw))
+      gc_mark(car(v)), gc_mark(cdr(v)); } }
 
 void gc(val *vals, unsigned long *allocs, unsigned long *mem) {
   if (gc_enabled) {
@@ -178,15 +177,14 @@ void do_apply() {
     RETURN_VAL((fn ? hd : tl)(args));
   else if (type_of(fn) == t_prim)
     RETURN_VAL(fn->data.prim.fn(args));
-  else {
-    for (gc_enabled = 0,
-         body = cdar(fn),
-         env = car(ev) = cons(zip(fn, caar(fn), args), cdr(fn)),
-         gc_enabled = 1;
-         type_of(cdr(body)) == t_pair;
-         body = cdr(body))
-      eval(car(body), env);
-    RETURN_EVAL(car(body), env); } }
+  else { for (gc_enabled = 0,
+              body = cdar(fn),
+              env = car(ev) = cons(zip(fn, caar(fn), args), cdr(fn)),
+              gc_enabled = 1;
+              type_of(cdr(body)) == t_pair;
+              body = cdr(body))
+           eval(car(body), env);
+         RETURN_EVAL(car(body), env); } }
 
 val eval_args(val l, val env, val *acc) {
   val tl;
@@ -432,11 +430,11 @@ void initialize() {
   static const struct { const char *s; val (*const p)(val); } prims[] = {
     { "assq", assq },     { "+", _add },         { "-", _sub },
     { "*", _mul },        { "/", _div },         { "zzz", scurry },
-    { "<", _lt },         { "set-hd", set_hd },
-    { "set-tl", set_tl }, { "=", eqish },        { "eq?", eq },
-    { "eval", _eval },    { "apply", _apply },   { "pair?", tp_pair },
-    { "num?", tp_num },   { "str?", tp_str },    { "sym?", tp_sym },
-    { "fn?", tp_fn },     { "rw?", tp_rw } };
+    { "<", _lt },         { "set-hd", set_hd },  { "set-tl", set_tl },
+    { "=", eqish },       { "eq?", eq },         { "eval", _eval },
+    { "apply", _apply },  { "pair?", tp_pair },  { "num?", tp_num },
+    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
+    { "rw?", tp_rw } };
   gc_enabled = 0;
   root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
   FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
