@@ -348,10 +348,12 @@ val read_sym(const char **str) {
                         symbol(buf); }
 
 val read_str(const char **str) {
-  const char *i;
+  const char *i; val s;
   for (i = *str; **str && **str != '"'; ++(*str))
     if (**str == '\\') ++(*str);
-  return string(strndup(i, (**str ? (*str)++ : *str) - i)); }
+  return s = new(t_str),
+         s->data.str = strndup(i, (**str ? (*str)++ : *str) - i),
+         s; }
 
 val read_cons(const char **str) {
   char c; val v;
