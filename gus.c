@@ -22,7 +22,7 @@
 
 typedef enum {
   t_pair = 1,    t_fn   = 1<<1, t_rw   = 1<<2, t_prim = 1<<3,
-  t_num  = 1<<4, t_sym  = 1<<5, t_str  = 1<<6, t_nil  = 1<<7
+  t_num  = 1<<4, t_sym  = 1<<5, t_nil  = 1<<6
 } t_t;
 
 typedef struct _val {
@@ -53,7 +53,7 @@ void gc(val *vals, unsigned long *allocs, unsigned long *mem) {
       if (v->alive) v->alive = 0, prev = v, v = v->next;
       else {
         prev ? (prev->next = v->next) : (*vals = v->next);
-        if (v->type & (t_str | t_sym)) free(v->data.str);
+        if (v->type == t_sym) free(v->data.str);
         free(v), *mem -= sizeof(struct _val);
         v = (prev ? prev->next : *vals); } } }
 
@@ -73,7 +73,7 @@ val new(t_t t) {
          vals = v; }
 
 void panic(int), println(val, FILE*);
-const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_str | t_nil;
+const int t_any = t_pair | t_fn | t_rw | t_prim | t_num | t_sym | t_nil;
 
 void tc(val v, const char *name, int var, int req, ...) {
   va_list ap; int n;
@@ -93,9 +93,6 @@ val lambda(val a, val b) {
 
 val form(val a, val b) {
   val r; return r = new(t_rw), car(r) = a, cdr(r) = b, r; }
-
-val string(const char *s) {
-  val r; return r = new(t_str), r->data.str = strdup(s), r; }
 
 val num(long l) {
   val r; return r = new(t_num), r->data.num = l, r; }
@@ -266,7 +263,7 @@ val (*special(val k))(val, val) {
 #define unop(n, t, fn) val n(val as) { return tc(as, #n, 0, 1, t), fn(car(as)); }
 unop(hd, t_pair, car) unop(tl, t_pair, cdr)
 #define typep(n, nn, ts) val tp_##n(val as) { return tc(as, nn, 0, 1, t_any), type_of(car(as)) & (ts) ? t : nil; }
-typep(pair, "pair?", t_pair) typep(num, "num?", t_num) typep(str, "str?", t_str)
+typep(pair, "pair?", t_pair) typep(num, "num?", t_num)
 typep(sym, "sym?", t_sym) typep(fn, "fn?", t_fn | t_prim) typep(rw, "rw?", t_rw)
 #define binop(n, name, ta, tb, r) val n(val as) { return tc(as, name, 0, 2, ta, tb), r; }
 #define binop_n(n, op) binop(n, #op, t_num, t_num, num(car(as)->data.num op cadr(as)->data.num))
@@ -308,10 +305,8 @@ val eqish(val v) {
   val a = car(v), b = cadr(v);
   if (a == b) return t;
   else if (type_of(a) != type_of(b)) return nil;
-  else switch (type_of(a)) {
-    case t_str:  return strcmp(a->data.str, b->data.str) ? nil : t;
-    case t_num:  return a->data.num == b->data.num ? t : nil;
-    default:     return nil; } }
+  else if (type_of(a) == t_num) return a->data.num == b->data.num ? t : nil;
+  else return nil; }
 
 const struct { const char c; val *const s; } qchars[] = {
   { '\'', &sym_qt }, { '`', &sym_qq }, { ',', &sym_uq },  { '@', &sym_xq } };
@@ -324,8 +319,7 @@ val charquote(char c) {
   FOREACH(i, qchars) if (qchars[i].c == c) return *qchars[i].s;
   return nil; }
 
-val read_num(const char**), read_sym(const char**),
-    read_str(const char**), read_cons(const char**);
+val read_num(const char**), read_sym(const char**), read_cons(const char**);
 val read_val(const char **str) {
   char c; val v;
   while (isspace(**str)) ++(*str);
@@ -333,7 +327,6 @@ val read_val(const char **str) {
   else if ((v = charquote(c)))
     return ++(*str), cons(v, cons(read_val(str), nil));
   else if (c == '(') return ++(*str), read_cons(str);
-  else if (c == '"') return ++(*str), read_str(str);
   else if ((v = read_num(str))) return v;
   else return read_sym(str); }
 
@@ -343,17 +336,9 @@ val read_num(const char **str) {
 
 val read_sym(const char **str) {
   char buf[100]; return memset(buf, 0, 100),
-                        sscanf(*str, "%99[^( \n\t\v\r\f)\"']", buf),
+                        sscanf(*str, "%99[^( \n\t\v\r\f)']", buf),
                         *str += strlen(buf),
                         symbol(buf); }
-
-val read_str(const char **str) {
-  const char *i; val s;
-  for (i = *str; **str && **str != '"'; ++(*str))
-    if (**str == '\\') ++(*str);
-  return s = new(t_str),
-         s->data.str = strndup(i, (**str ? (*str)++ : *str) - i),
-         s; }
 
 val read_cons(const char **str) {
   char c; val v;
@@ -375,7 +360,7 @@ val read(const char **str) {
                 v; }
 
 void print(val d, FILE *f) {
-  char q, *c;
+  char q;
   switch (type_of(d)) {
     case t_nil:  fprintf(f, "()"); break;
     case t_num:  fprintf(f, "%ld", d->data.num); break;
@@ -384,12 +369,6 @@ void print(val d, FILE *f) {
     case t_fn:
     case t_rw:
       fputc('#', f), print(cons(d->type == t_fn ? sym_fn : sym_rw, car(d)), f);
-      break;
-    case t_str:
-      putc('"', f);
-      for (c = d->data.str; *c; ++c)
-        *c == '"' ? fprintf(f, "\\\"") : putc(*c, f);
-      putc('"', f);
       break;
     case t_pair:
       if ((q = quotechar(car(d))) && type_of(cdr(d)) == t_pair)
@@ -435,8 +414,7 @@ void initialize() {
     { "<", _lt },         { "set-hd", set_hd },  { "set-tl", set_tl },
     { "=", eqish },       { "eq?", eq },         { "eval", _eval },
     { "apply", _apply },  { "pair?", tp_pair },  { "num?", tp_num },
-    { "str?", tp_str },   { "sym?", tp_sym },    { "fn?", tp_fn },
-    { "rw?", tp_rw } };
+    { "sym?", tp_sym },    { "fn?", tp_fn }, { "rw?", tp_rw } };
   gc_enabled = 0;
   root.data.pair.snd = cons(nil, cons(cons(nil, nil), nil));
   FOREACH(i, syms) *syms[i].s = symbol(syms[i].n);
